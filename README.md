@@ -50,6 +50,20 @@ bitmap, written directly to `/dev/usb/lp0` (no CUPS, no vendor driver).
   `http://infinite-scroll.local:8080` (LAN only).
 - Automatic/dynamic printing service: not yet started.
 
+## Web studio
+
+The LAN-only control surface supports two source types: structured fictional
+professional-network posts rendered through the editable thermal stylesheet,
+and uploaded raster artwork normalized to the same 650-dot print width. Either
+can be printed immediately or added to a persistent SQLite backlog.
+
+The backlog scheduler releases one item at a time after a random delay inside
+a configurable minute range. It can follow queue order or choose randomly,
+and can stop after every item has printed once or loop continuously. Queue
+contents, print counts, scheduler settings, and the next deadline survive
+service restarts. Saved state lives under `/var/lib/infinite-scroll/`; it is
+not part of application deployments.
+
 ## Quick start
 
 Generate all fictional fixtures:

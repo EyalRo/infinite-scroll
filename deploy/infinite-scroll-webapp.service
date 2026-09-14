@@ -9,6 +9,9 @@ SupplementaryGroups=lp
 WorkingDirectory=/home/stags/infinite-scroll-webapp
 Environment=INFINITE_SCROLL_CSS_PATH=/var/lib/infinite-scroll/webapp/template.css
 Environment=INFINITE_SCROLL_PRINT_READY_DIR=/var/lib/infinite-scroll/print-ready
+Environment=INFINITE_SCROLL_BACKLOG_DB=/var/lib/infinite-scroll/webapp/backlog.sqlite3
+Environment=INFINITE_SCROLL_UPLOADS_DIR=/var/lib/infinite-scroll/posts/uploads
+Environment=INFINITE_SCROLL_START_SCHEDULER=1
 ExecStart=/home/stags/infinite-scroll-webapp/venv/bin/python /home/stags/infinite-scroll-webapp/run.py
 Restart=on-failure
 RestartSec=2

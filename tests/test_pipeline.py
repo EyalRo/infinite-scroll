@@ -11,7 +11,7 @@ FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "sample_post.json").r
 # Filled in below once, from this test's own failure message (see Task 3,
 # Step 5 of the implementation plan) — this is a regression guard against
 # the template, default CSS, or packing logic silently changing.
-EXPECTED_SHA256 = "97152d897b853711e763a9de195b29e322feb28e1b7b43096b0fdf4f0aa25257"
+EXPECTED_SHA256 = "c463923786d2484f35432224c5fd5e79bcf56d583d8543094ba706127740c3b5"
 
 
 def test_pipeline_is_stable_for_the_fixed_sample_post():

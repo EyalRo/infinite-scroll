@@ -33,6 +33,14 @@ def _preflight(zpl_text: str, device_path: str) -> str | None:
     return None
 
 
+def printer_available(device_path: str | None = None) -> bool:
+    device_path = device_path or _device_path()
+    try:
+        return stat.S_ISCHR(os.stat(device_path).st_mode)
+    except OSError:
+        return False
+
+
 def print_zpl(zpl_text: str, device_path: str | None = None, timeout_s: float = 15.0) -> PrintResult:
     device_path = device_path or _device_path()
 

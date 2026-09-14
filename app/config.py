@@ -24,6 +24,24 @@ def print_ready_dir() -> Path:
     )
 
 
+def backlog_db_path() -> Path:
+    return Path(
+        os.environ.get(
+            "INFINITE_SCROLL_BACKLOG_DB",
+            "/var/lib/infinite-scroll/webapp/backlog.sqlite3",
+        )
+    )
+
+
+def uploads_dir() -> Path:
+    return Path(
+        os.environ.get(
+            "INFINITE_SCROLL_UPLOADS_DIR",
+            "/var/lib/infinite-scroll/posts/uploads",
+        )
+    )
+
+
 def current_css() -> str:
     path = css_path()
     if path.exists():

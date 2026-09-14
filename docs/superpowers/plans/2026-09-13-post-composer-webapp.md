@@ -1555,7 +1555,7 @@ ssh stags@infinite-scroll.local '
 set -e
 sudo apt-get update
 sudo apt-get install -y python3-venv python3-pip poppler-utils \
-  libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0 libffi-dev \
+  libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 libffi-dev \
   shared-mime-info fonts-dejavu-core
 cd /home/stags/infinite-scroll-webapp
 python3 -m venv venv

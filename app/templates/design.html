@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Infinite Scroll — Design</title>
+<style>
+  body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
+  nav { position: absolute; top: 12px; left: 12px; }
+  nav a { margin-right: 16px; }
+  .editor, .preview { flex: 1; padding: 60px 20px 20px; box-sizing: border-box; overflow: auto; }
+  textarea { width: 100%; height: 90%; font-family: monospace; font-size: 13px; box-sizing: border-box; }
+  #save-status { margin-top: 8px; font-weight: 600; }
+  .preview img { max-width: 100%; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+<nav><a href="/">Compose</a><a href="/design">Design</a></nav>
+<div class="editor">
+  <h2>CSS</h2>
+  <textarea id="css-editor">{{ css_text }}</textarea>
+  <br>
+  <button id="save-btn">Save</button>
+  <span id="save-status"></span>
+</div>
+<div class="preview">
+  <h2>Live preview</h2>
+  <img id="preview-img" alt="preview">
+</div>
+<script>
+const editor = document.getElementById("css-editor");
+const previewImg = document.getElementById("preview-img");
+const saveStatus = document.getElementById("save-status");
+let debounceTimer = null;
+
+async function renderPreview() {
+  const resp = await fetch("/design/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ css: editor.value }),
+  });
+  const data = await resp.json();
+  previewImg.src = data.image;
+}
+
+editor.addEventListener("input", () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(renderPreview, 500);
+});
+
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const resp = await fetch("/design", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ css: editor.value }),
+  });
+  const data = await resp.json();
+  saveStatus.textContent = data.success ? "saved ✓" : "save failed";
+  setTimeout(() => { saveStatus.textContent = ""; }, 2000);
+});
+
+renderPreview();
+</script>
+</body>
+</html>

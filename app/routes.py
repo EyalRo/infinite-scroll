@@ -46,9 +46,16 @@ def do_print():
             record=None,
         ), 400
 
-    img = render_post_png(fields, current_css())
-    bitimg = to_1bit(img)
-    job = pack_to_zpl(bitimg)
+    try:
+        img = render_post_png(fields, current_css())
+        bitimg = to_1bit(img)
+        job = pack_to_zpl(bitimg)
+    except Exception as exc:
+        return jsonify(
+            success=False,
+            message=f"render failed: {exc}",
+            record=None,
+        ), 502
 
     result = print_zpl(job.text)
 

@@ -53,3 +53,21 @@ def test_print_failure_does_not_save_a_record(tmp_path, monkeypatch):
     assert body["success"] is False
     assert body["record"] is None
     assert list(tmp_path.iterdir()) == []
+
+
+def test_print_handles_render_pipeline_exception(tmp_path, monkeypatch):
+    """A failure anywhere in render_post_png/to_1bit/pack_to_zpl must not
+    surface as an uncaught exception (Flask default 500 HTML page) -- it
+    should come back as the same JSON error shape the rest of the route
+    uses, and must not attempt to print or save a record."""
+    monkeypatch.setenv("INFINITE_SCROLL_PRINT_READY_DIR", str(tmp_path))
+    with patch("app.routes.render_post_png", side_effect=RuntimeError("boom")):
+        client = create_app().test_client()
+        resp = client.post("/print", data=SAMPLE_FORM)
+
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert body["success"] is False
+    assert "boom" in body["message"]
+    assert body["record"] is None
+    assert list(tmp_path.iterdir()) == []

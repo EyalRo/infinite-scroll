@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from app import create_app
 
 
@@ -35,3 +37,18 @@ def test_design_save_writes_the_css_file(tmp_path, monkeypatch):
     assert resp.status_code == 200
     assert resp.get_json()["success"] is True
     assert css_file.read_text() == ".post { color: blue; }"
+
+
+def test_design_preview_handles_render_pipeline_exception():
+    """A render failure must not surface as an uncaught exception (Flask
+    default 500 HTML page) -- it should come back as a JSON error with no
+    `image` key, so the client-side `await resp.json()` doesn't throw and
+    the preview doesn't hang silently."""
+    with patch("app.design_routes.render_post_png", side_effect=RuntimeError("boom")):
+        client = create_app().test_client()
+        resp = client.post("/design/preview", json={"css": ".post { color: #000; }"})
+
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert "image" not in body
+    assert "boom" in body["error"]

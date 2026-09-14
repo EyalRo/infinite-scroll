@@ -45,3 +45,25 @@ def test_render_html_escapes_user_supplied_fields():
     assert "&lt;img" in html
     assert "&amp;B" in html
     assert "&lt;" in html  # Closing angle bracket escaped
+
+
+def test_render_html_forces_disclaimer_visible_even_when_css_hides_it():
+    """The disclaimer footer must stay visible no matter what the
+    user-editable CSS says. A fixed, later style block with !important
+    must win the cascade over a hostile `.disclaimer { display: none; }`
+    saved through the Design page."""
+    hostile_css = ".disclaimer { display: none; }"
+
+    html = render_html(FIXTURE, hostile_css)
+
+    # The hostile override is present in the rendered output (it is passed
+    # through verbatim, same as any user CSS)...
+    assert hostile_css in html
+
+    # ...but a fixed style block enforcing visibility must also be present,
+    # and must come after the user CSS in document order so it wins the
+    # cascade via !important.
+    hostile_index = html.index(hostile_css)
+    assert "display: block !important" in html
+    assert "visibility: visible !important" in html
+    assert html.index("display: block !important") > hostile_index

@@ -39,7 +39,10 @@ def design_editor():
 @bp.post("/design/preview")
 def design_preview():
     css_text = request.get_json(force=True).get("css", "")
-    img = render_post_png(SAMPLE_FIELDS, css_text)
+    try:
+        img = render_post_png(SAMPLE_FIELDS, css_text)
+    except Exception as exc:
+        return jsonify(error=f"render failed: {exc}"), 502
     return jsonify(image=_png_data_url(img))
 
 

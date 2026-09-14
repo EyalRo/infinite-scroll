@@ -7,6 +7,21 @@
 body { margin: 0; }
 {{ css|safe }}
 </style>
+<!--
+  Fixed, non-editable style block. Comes after the user-authored CSS above
+  so it wins the cascade (same specificity, declared later, !important
+  beats non-!important). The disclaimer must always render regardless of
+  the current CSS -- see design spec / plan Global Constraints. Do NOT
+  fold this into the {{ css|safe }} block above; it must stay outside what
+  the Design page can edit.
+-->
+<style>
+.disclaimer {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+</style>
 </head>
 <body>
 <div class="post">

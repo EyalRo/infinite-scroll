@@ -39,7 +39,7 @@ async function renderPreview() {
     body: JSON.stringify({ css: editor.value }),
   });
   const data = await resp.json();
-  previewImg.src = data.image;
+  if (data.image) { previewImg.src = data.image; }
 }
 
 editor.addEventListener("input", () => {

@@ -14,18 +14,21 @@ bitmap, written directly to `/dev/usb/lp0` (no CUPS, no vendor driver).
 
 - `docs/superpowers/specs/` — design specs (brainstormed + approved before
   implementation). Start here for anything not yet built.
+- `docs/raspberry-pi-bringup.md` — SD imaging, cloud-init customization,
+  first-boot checks, EEPROM/OS upgrades, and recovery access.
+- `docs/validated-printing.md` — the physically validated 650-dot raster,
+  ZPL encoding, raw-USB transport, and single/repeated/batch procedures.
 - `tools/generate_post.py` — reference/prototype generator: renders a
   fictional post (name/title/body/counts) to PNG, dithers it, and packs it
   into a self-contained ZPL job, per the documented conversion contract.
   Superseded by the post-composer web app once built (see the spec in
   `docs/`), but kept as the reference implementation of the pipeline.
   Requires Pillow — run via `nix-shell tools/shell.nix --run "python3 tools/generate_post.py tools/specs.json <outdir>"`.
-- `tools/specs.json` — the 5 parody-post definitions used for the
-  2026-09-13 batch (Brayden Steelworth, Persimmon Vale, Chad Ironframe,
-  Willow Sterling-Cho, Reginald Huxtable-Vance III). All fictional/satirical;
-  none reference real people, accounts, or platforms.
-- `tools/manifest.json` — sizes/dimensions/sha256 of the PNG/1-bit-PNG/ZPL
-  artifacts generated for that batch (record only; the artifacts themselves
+- `tools/specs.json` — six fictional parody-post fixtures, including the
+  physically validated Dino Y. Saur post and the five-post 2026-09-13 batch.
+  None reference real people, accounts, or platforms.
+- `tools/manifest.json` — sizes/dimensions/sha256 of the five-post batch's
+  PNG/1-bit-PNG/ZPL artifacts (historical record only; the artifacts themselves
   live on the Pi at `/var/lib/infinite-scroll/print-ready/`, not duplicated
   here).
 - `scripts/print_job.sh` — the validated single-job print procedure
@@ -34,6 +37,8 @@ bitmap, written directly to `/dev/usb/lp0` (no CUPS, no vendor driver).
   offline/stalled printer caused an unbounded write to hang the SSH session.
 - `scripts/print_batch.sh` — loops `print_job.sh` over several distinct
   jobs, stopping on the first failure instead of printing blind.
+- `scripts/print_copies.sh` — safely submits one job N times; the accepted
+  30-copy run uses its default 0.5-second spacing.
 
 ## Status
 
@@ -41,5 +46,22 @@ bitmap, written directly to `/dev/usb/lp0` (no CUPS, no vendor driver).
   in use.
 - Post-composer web app (form + print button + CSS design editor, per
   `docs/superpowers/specs/2026-09-13-post-composer-webapp-design.md`):
-  designed, not yet implemented.
+  implemented and deployed on the Pi as `infinite-scroll-webapp.service` at
+  `http://infinite-scroll.local:8080` (LAN only).
 - Automatic/dynamic printing service: not yet started.
+
+## Quick start
+
+Generate all fictional fixtures:
+
+```sh
+nix-shell tools/shell.nix --run \
+  "python3 tools/generate_post.py tools/specs.json outputs"
+```
+
+On the Pi, print one approved job or repeat it 30 times:
+
+```sh
+scripts/print_job.sh /var/lib/infinite-scroll/print-ready/dino-y-saur.zpl
+scripts/print_copies.sh /var/lib/infinite-scroll/print-ready/dino-y-saur.zpl 30
+```

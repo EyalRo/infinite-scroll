@@ -17,23 +17,36 @@ Generates fictional/satirical "professional network" posts. Content is
 entirely invented parody, not scraped or attributed to any real account.
 """
 import hashlib
+import shutil
+import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
-
-FONT_DIR = "/nix/store/5dg9348vl33vd5lwgc0anr6chwd3jrqw-dejavu-fonts-2.37/share/fonts/truetype"
-F_REGULAR = f"{FONT_DIR}/DejaVuSans.ttf"
-F_BOLD = f"{FONT_DIR}/DejaVuSans-Bold.ttf"
-F_ITALIC = f"{FONT_DIR}/DejaVuSans-Oblique.ttf"
-F_MONO = f"{FONT_DIR}/DejaVuSansMono.ttf"
 
 CANVAS_W = 650
 MARGIN = 48
 CONTENT_W = CANVAS_W - 2 * MARGIN
 WHITE = 255
 BLACK = 0
+
+
+def font_path(pattern, filename):
+    """Resolve fonts portably on NixOS and Raspberry Pi OS."""
+    if shutil.which("fc-match"):
+        match = subprocess.check_output(
+            ["fc-match", "-f", "%{file}", pattern], text=True
+        ).strip()
+        if match:
+            return match
+    fallback = Path("/usr/share/fonts/truetype/dejavu") / filename
+    if fallback.is_file():
+        return str(fallback)
+    raise RuntimeError(f"cannot find {pattern}; install DejaVu fonts and fontconfig")
+
+
+F_REGULAR = font_path("DejaVu Sans", "DejaVuSans.ttf")
+F_BOLD = font_path("DejaVu Sans:style=Bold", "DejaVuSans-Bold.ttf")
 
 
 def wrap_text(draw, text, font, max_width):

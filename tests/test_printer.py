@@ -44,6 +44,12 @@ def test_print_zpl_times_out_on_a_stuck_write(tmp_path):
     assert result.success is False
     assert "timed out" in result.message
 
+    # Unblock the leaked writer thread so it completes and releases the
+    # real lock through its own `finally` — avoids reaching into private
+    # printer-module state from the tests.
+    with open(fifo_path, "rb") as reader:
+        reader.read()
+
 
 def test_print_zpl_reports_busy_while_a_stuck_write_holds_the_lock(tmp_path):
     fifo_path = tmp_path / "stuck-lp0-2"
@@ -55,3 +61,11 @@ def test_print_zpl_reports_busy_while_a_stuck_write_holds_the_lock(tmp_path):
     assert "timed out" in first.message
     assert second.success is False
     assert "busy" in second.message
+
+    # Unblock the leaked writer thread (from the first, timed-out call) so
+    # it completes and releases the real lock through its own `finally` —
+    # avoids reaching into private printer-module state from the tests.
+    # Done once, after both assertions above, so the lock is still held
+    # while the second call checks for "busy".
+    with open(fifo_path, "rb") as reader:
+        reader.read()

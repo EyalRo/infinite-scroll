@@ -47,7 +47,16 @@ body { margin: 0; }
     <div class="button">{{ icons.REPEAT_2|safe }}<span>Repost</span></div>
     <div class="button">{{ icons.SEND|safe }}<span>Send</span></div>
   </div>
-  <div class="disclaimer">
+  <!--
+    Inline style attribute: belt-and-braces on top of the fixed <style>
+    block above. A selector-based rule can always be crafted with higher
+    specificity than that block's `.disclaimer{...}` (e.g.
+    `.post .disclaimer{...}`), which would beat it regardless of source
+    order since !important rules are still sorted by specificity first.
+    An inline style attribute carries higher specificity than any
+    selector, so this is the layer that cannot be out-specificity'd.
+  -->
+  <div class="disclaimer" style="display: block !important; visibility: visible !important; opacity: 1 !important;">
     <div>FICTIONAL TEST POST &middot; NOT LINKEDIN DATA</div>
     <div>FICTIONAL SATIRE</div>
   </div>

@@ -1,0 +1,9 @@
+{
+  "name": "Test Poster",
+  "title": "Quality Assurance · Determinism Enthusiast",
+  "avatar_initials": "TP",
+  "body": "This is a fixed sample body used only for pipeline regression testing.\n\nIt has two paragraphs.",
+  "reactions": 1234,
+  "comments": 56,
+  "reposts": 7
+}

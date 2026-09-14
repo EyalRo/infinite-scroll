@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@page { size: 650px 20000px; margin: 0; }
+body { margin: 0; }
+{{ css|safe }}
+</style>
+</head>
+<body>
+<div class="post">
+  <div class="header">
+    <div class="avatar">{{ avatar_initials }}</div>
+    <div class="header-text">
+      <div class="name">{{ name }}</div>
+      <div class="title">{{ title }}</div>
+      <div class="meta">2h &middot; Public</div>
+    </div>
+  </div>
+  <div class="body">
+    {% for para in body_paragraphs %}
+    <p>{{ para }}</p>
+    {% endfor %}
+  </div>
+  <div class="divider"></div>
+  <div class="stats">{{ reactions_fmt }} reactions &middot; {{ comments_fmt }} comments &middot; {{ reposts_fmt }} reposts</div>
+  <div class="divider"></div>
+  <div class="button-row">
+    <div class="button">{{ icons.THUMBS_UP|safe }}<span>Like</span></div>
+    <div class="button">{{ icons.MESSAGE_CIRCLE|safe }}<span>Comment</span></div>
+    <div class="button">{{ icons.REPEAT_2|safe }}<span>Repost</span></div>
+    <div class="button">{{ icons.SEND|safe }}<span>Send</span></div>
+  </div>
+  <div class="disclaimer">
+    <div>FICTIONAL TEST POST &middot; NOT LINKEDIN DATA</div>
+    <div>FICTIONAL SATIRE</div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Infinite Scroll — Compose</title>
+<style>
+  body { font-family: sans-serif; max-width: 640px; margin: 40px auto; }
+  label { display: block; margin-top: 12px; font-weight: 600; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 6px; font-size: 15px; }
+  textarea { height: 160px; }
+  button { margin-top: 16px; padding: 10px 20px; font-size: 15px; }
+  #status { margin-top: 12px; font-weight: 600; }
+  nav a { margin-right: 16px; }
+</style>
+</head>
+<body>
+<nav><a href="/">Compose</a><a href="/design">Design</a></nav>
+<h1>Compose a post</h1>
+<form id="compose-form">
+  <label>Name <input name="name" required></label>
+  <label>Title <input name="title" required></label>
+  <label>Avatar initials <input name="avatar_initials" maxlength="3" required></label>
+  <label>Body (blank line between paragraphs) <textarea name="body" required></textarea></label>
+  <label>Reactions <input name="reactions" type="number" value="0"></label>
+  <label>Comments <input name="comments" type="number" value="0"></label>
+  <label>Reposts <input name="reposts" type="number" value="0"></label>
+  <button type="submit">Print</button>
+</form>
+<div id="status"></div>
+<script>
+document.getElementById("compose-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const status = document.getElementById("status");
+  status.textContent = "printing…";
+  const formData = new FormData(e.target);
+  const resp = await fetch("/print", { method: "POST", body: formData });
+  const data = await resp.json();
+  status.textContent = data.success ? "printed ✓" : `failed — ${data.message}`;
+});
+</script>
+</body>
+</html>

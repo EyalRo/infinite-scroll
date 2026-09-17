@@ -11,6 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use common::http::{header_value, json_response};
 use tiny_http::{Method, Server};
 
+const INDEX_HTML: &str = include_str!("../../../web/library/index.html");
+const STYLE_CSS: &str = include_str!("../../../web/library/style.css");
+const APP_JS: &str = include_str!("../../../web/library/app.js");
+
 struct Config {
     token: String,
     state_path: PathBuf,
@@ -63,6 +67,15 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
     if url == "/health" && method == Method::Get {
         return common::http::with_cors(json_response(200, &serde_json::json!({"status": "ok"})));
     }
+    if url == "/" && method == Method::Get {
+        return common::http::with_cors(static_response(INDEX_HTML, "text/html; charset=utf-8"));
+    }
+    if url == "/style.css" && method == Method::Get {
+        return common::http::with_cors(static_response(STYLE_CSS, "text/css; charset=utf-8"));
+    }
+    if url == "/app.js" && method == Method::Get {
+        return common::http::with_cors(static_response(APP_JS, "application/javascript; charset=utf-8"));
+    }
 
     let bearer = header_value(request, "Authorization");
     let access_jwt = header_value(request, "Cf-Access-Jwt-Assertion");
@@ -87,6 +100,12 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
         _ => json_response(404, &serde_json::json!({"error": "not found"})),
     };
     common::http::with_cors(response)
+}
+
+fn static_response(body: &'static str, content_type: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes())
+        .expect("static header name/value is always valid");
+    tiny_http::Response::from_data(body.as_bytes().to_vec()).with_header(header)
 }
 
 fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {

@@ -1,0 +1,18 @@
+[Unit]
+Description=Infinite Scroll watcher/converter
+After=network.target
+
+[Service]
+Type=simple
+User=stags
+WorkingDirectory=/home/stags/infinite-scroll
+Environment=WATCHER_READY_DIR=/var/lib/infinite-scroll/ready
+Environment=WATCHER_COMPLETE_DIR=/var/lib/infinite-scroll/complete
+Environment=WATCHER_FAILED_DIR=/var/lib/infinite-scroll/failed
+Environment=WATCHER_POLL_SECONDS=3
+ExecStart=/home/stags/infinite-scroll/bin/watcher
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

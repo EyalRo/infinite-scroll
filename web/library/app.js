@@ -44,8 +44,12 @@ function renderCatalog(items) {
     const removeButton = document.createElement("button");
     removeButton.textContent = "Remove";
     removeButton.addEventListener("click", async () => {
-      await removeItem(item.id);
-      await refreshCatalog();
+      try {
+        await removeItem(item.id);
+        await refreshCatalog();
+      } catch (error) {
+        uploadStatus.textContent = error.message;
+      }
     });
     li.append(label, removeButton);
     catalogList.append(li);

@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod dither;
+pub mod http;
 pub mod zpl;
 
 pub use zpl::ZplJob;

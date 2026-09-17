@@ -21,6 +21,22 @@ pub fn header_value<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
         .map(|header| header.value.as_str())
 }
 
+/// The three services and the frontend all live under
+/// *.infinite-scroll.art.virtualdino.com but are different origins from a
+/// browser's perspective -- every response needs this, and every OPTIONS
+/// preflight needs a bare 204 carrying just these headers.
+pub fn with_cors(response: Response<std::io::Cursor<Vec<u8>>>) -> Response<std::io::Cursor<Vec<u8>>> {
+    response
+        .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"https://library.infinite-scroll.art.virtualdino.com"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, DELETE, OPTIONS"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Authorization, Content-Type"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Access-Control-Allow-Credentials"[..], &b"true"[..]).unwrap())
+}
+
+pub fn cors_preflight_response() -> Response<std::io::Cursor<Vec<u8>>> {
+    with_cors(Response::from_data(Vec::new()).with_status_code(204))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

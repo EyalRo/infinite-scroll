@@ -39,26 +39,38 @@ fn main() {
 }
 
 fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    if *request.method() == Method::Options {
+        return common::http::cors_preflight_response();
+    }
+
     if request.url() == "/health" && *request.method() == Method::Get {
-        return json_response(200, &serde_json::json!({"status": "ok"}));
+        return common::http::with_cors(json_response(200, &serde_json::json!({"status": "ok"})));
     }
 
     if request.url() != "/uploads" || *request.method() != Method::Post {
-        return json_response(404, &serde_json::json!({"error": "not found"}));
+        return common::http::with_cors(json_response(404, &serde_json::json!({"error": "not found"})));
     }
 
     let bearer = header_value(request, "Authorization");
     let access_jwt = header_value(request, "Cf-Access-Jwt-Assertion");
     if !common::auth::is_authorized(bearer, access_jwt, &config.token) {
-        return json_response(401, &serde_json::json!({"error": "unauthorized"}));
+        return common::http::with_cors(json_response(401, &serde_json::json!({"error": "unauthorized"})));
     }
 
-    if let Some(length) = request.body_length() {
+    let response = if let Some(length) = request.body_length() {
         if length as u64 > MAX_BODY_BYTES {
-            return json_response(413, &serde_json::json!({"error": "upload exceeds the 20 MB limit"}));
+            json_response(413, &serde_json::json!({"error": "upload exceeds the 20 MB limit"}))
+        } else {
+            handle_upload(config, request)
         }
-    }
+    } else {
+        handle_upload(config, request)
+    };
 
+    common::http::with_cors(response)
+}
+
+fn handle_upload(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let mut bytes = Vec::new();
     if let Err(error) = request.as_reader().take(MAX_BODY_BYTES + 1).read_to_end(&mut bytes) {
         return json_response(400, &serde_json::json!({"error": format!("failed to read request body: {error}")}));

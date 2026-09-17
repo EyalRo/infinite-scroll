@@ -54,20 +54,23 @@ fn main() {
 }
 
 fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    if *request.method() == Method::Options {
+        return common::http::cors_preflight_response();
+    }
     let url = request.url().to_string();
     let method = request.method().clone();
 
     if url == "/health" && method == Method::Get {
-        return json_response(200, &serde_json::json!({"status": "ok"}));
+        return common::http::with_cors(json_response(200, &serde_json::json!({"status": "ok"})));
     }
 
     let bearer = header_value(request, "Authorization");
     let access_jwt = header_value(request, "Cf-Access-Jwt-Assertion");
     if !common::auth::is_authorized(bearer, access_jwt, &config.token) {
-        return json_response(401, &serde_json::json!({"error": "unauthorized"}));
+        return common::http::with_cors(json_response(401, &serde_json::json!({"error": "unauthorized"})));
     }
 
-    match (url.as_str(), &method) {
+    let response = match (url.as_str(), &method) {
         ("/status", Method::Get) => status_response(config),
         ("/catalog", Method::Get) => {
             let items = library::list(&config.complete_dir);
@@ -82,7 +85,8 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
         }
         ("/autoprint", Method::Post) => configure_autoprint(config, request),
         _ => json_response(404, &serde_json::json!({"error": "not found"})),
-    }
+    };
+    common::http::with_cors(response)
 }
 
 fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {

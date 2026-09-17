@@ -2,10 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# rustup's rustc on this NixOS dev host needs zlib on LD_LIBRARY_PATH or it fails
-# with "libz.so.1: cannot open shared object file". Regenerate the path with
-# `nix build nixpkgs#zlib --no-link --print-out-paths` if this store path is GC'd.
-ZLIB_LIB=/nix/store/dbz6pb9g67kpgpl95k8d85kzpxm1c32p-zlib-1.3.2/lib
+# rustup's rustc on a NixOS dev host needs zlib on LD_LIBRARY_PATH or it fails
+# with "libz.so.1: cannot open shared object file". Resolved at run time (not
+# hardcoded) since the exact store path is host- and gc-specific.
+ZLIB_LIB="$(nix build nixpkgs#zlib --no-link --print-out-paths)/lib"
 
 echo "Cross-compiling..."
 nix shell nixpkgs#pkgsCross.aarch64-multiplatform.stdenv.cc -c env \

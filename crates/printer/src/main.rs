@@ -17,6 +17,7 @@ struct Config {
     complete_dir: PathBuf,
     device_path: PathBuf,
     bind_addr: String,
+    state_lock: std::sync::Mutex<()>,
 }
 
 fn config_from_env() -> Config {
@@ -26,6 +27,7 @@ fn config_from_env() -> Config {
         complete_dir: PathBuf::from(env::var("PRINTER_COMPLETE_DIR").expect("PRINTER_COMPLETE_DIR must be set")),
         device_path: PathBuf::from(env::var("PRINTER_DEVICE_PATH").unwrap_or_else(|_| "/dev/usb/lp0".to_string())),
         bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8082".to_string()),
+        state_lock: std::sync::Mutex::new(()),
     }
 }
 
@@ -119,6 +121,7 @@ fn configure_autoprint(config: &Config, request: &mut tiny_http::Request) -> tin
         return json_response(400, &serde_json::json!({"error": "enabled must be a boolean"}));
     };
 
+    let _guard = config.state_lock.lock().unwrap();
     let mut settings = state::load(&config.state_path);
     if let Some(value) = payload.get("min_minutes").and_then(|v| v.as_f64()) {
         settings.min_minutes = value;
@@ -156,11 +159,19 @@ fn configure_autoprint(config: &Config, request: &mut tiny_http::Request) -> tin
 /// and prints one item before scheduling the next delay. Reads state
 /// fresh from disk every tick, so a restart mid-wait resumes correctly.
 fn scheduler_loop(config: Arc<Config>) {
-    // No local lock here: printer_device::PRINT_LOCK already serializes the
-    // one device write this process ever makes, and this loop is the only
-    // caller (there is no separate "print now" path in this design).
+    // No lock is needed around the device write itself: printer_device::PRINT_BUSY
+    // (a static AtomicBool) already serializes the one device write this process
+    // ever makes, and this loop is the only caller (there is no separate "print
+    // now" path in this design). We do, however, take `config.state_lock` around
+    // each tick's state::load -> mutate -> state::save sequence, because that
+    // sequence is *not* otherwise safe: the HTTP thread's configure_autoprint
+    // handler does its own unsynchronized read-modify-write of the same state
+    // file, and without this lock a POST /autoprint landing while this thread is
+    // mid-print (up to 15s) would be silently overwritten by this tick's stale
+    // save at the end of the loop.
     loop {
         std::thread::sleep(Duration::from_secs(1));
+        let _guard = config.state_lock.lock().unwrap();
         let mut settings = state::load(&config.state_path);
         if !settings.enabled {
             continue;
@@ -189,6 +200,9 @@ fn scheduler_loop(config: Arc<Config>) {
             Ok(text) => text,
             Err(error) => {
                 settings.last_error = Some(format!("failed to read print job for {}: {error}", chosen.id));
+                settings.next_print_at = Some(
+                    now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+                );
                 let _ = state::save(&config.state_path, &settings);
                 continue;
             }

@@ -441,6 +441,11 @@ dependencies = [
 [[package]]
 name = "watcher"
 version = "0.1.0"
+dependencies = [
+ "common",
+ "serde_json",
+ "uuid",
+]
 
 [[package]]
 name = "zlib-rs"

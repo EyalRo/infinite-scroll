@@ -2,8 +2,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 pub struct PrintResult {
@@ -11,14 +11,14 @@ pub struct PrintResult {
     pub message: String,
 }
 
-static PRINT_LOCK: Mutex<()> = Mutex::new(());
+static PRINT_BUSY: AtomicBool = AtomicBool::new(false);
 
 pub fn is_available(device_path: &Path) -> bool {
     std::fs::metadata(device_path).map(|meta| meta.file_type().is_char_device()).unwrap_or(false)
 }
 
 pub fn is_busy() -> bool {
-    PRINT_LOCK.try_lock().is_err()
+    PRINT_BUSY.load(Ordering::SeqCst)
 }
 
 fn preflight(zpl_text: &str, device_path: &Path) -> Option<String> {
@@ -43,12 +43,12 @@ pub fn print_zpl(device_path: &Path, zpl_text: &str, timeout: Duration) -> Print
         return PrintResult { success: false, message: error };
     }
 
-    let Ok(_guard) = PRINT_LOCK.try_lock() else {
+    if PRINT_BUSY.swap(true, Ordering::SeqCst) {
         return PrintResult {
             success: false,
             message: "printer busy: a previous print is still in progress".to_string(),
         };
-    };
+    }
 
     let (sender, receiver) = mpsc::channel();
     let device_path = device_path.to_path_buf();
@@ -58,6 +58,7 @@ pub fn print_zpl(device_path: &Path, zpl_text: &str, timeout: Duration) -> Print
             .write(true)
             .open(&device_path)
             .and_then(|mut file| file.write_all(zpl_text.as_bytes()).and_then(|_| file.flush()));
+        PRINT_BUSY.store(false, Ordering::SeqCst);
         let _ = sender.send(outcome);
     });
 
@@ -77,6 +78,11 @@ pub fn print_zpl(device_path: &Path, zpl_text: &str, timeout: Duration) -> Print
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_flag_reads_false_before_any_print_starts() {
+        assert!(!is_busy());
+    }
 
     #[test]
     fn rejects_an_empty_job_before_touching_the_device() {

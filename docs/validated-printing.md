@@ -43,27 +43,15 @@ Widths of 812, 760, 700, and 650 dots were physically tried. The 650-dot
 version was approved. Keep width as one explicit configuration value and
 change it only when the media, printer, or desired margins change.
 
-## Generate fixtures
-
-From the repository root:
-
-```sh
-nix-shell tools/shell.nix --run \
-  "python3 tools/generate_post.py tools/specs.json outputs"
-```
-
-The generator produces grayscale PNG, 1-bit PNG, ZPL, and a manifest with
-dimensions, sizes, and SHA-256 hashes. `tools/specs.json` contains fictional
-satire only; it is not scraped social-network data.
-
 ## Print one or many
 
-Install the scripts on the Pi, then:
+Install the scripts on the Pi, then (using the current library path — see
+"Installation paths" below):
 
 ```sh
-scripts/print_job.sh /var/lib/infinite-scroll/print-ready/dino-y-saur.zpl
-scripts/print_copies.sh /var/lib/infinite-scroll/print-ready/dino-y-saur.zpl 30
-scripts/print_batch.sh /var/lib/infinite-scroll/print-ready slug-one slug-two
+scripts/print_job.sh /var/lib/infinite-scroll/complete/<id>.zpl
+scripts/print_copies.sh /var/lib/infinite-scroll/complete/<id>.zpl 30
+scripts/print_batch.sh /var/lib/infinite-scroll/complete <id-one> <id-two>
 ```
 
 `print_job.sh` verifies the file and device, calculates a source hash, and
@@ -77,14 +65,20 @@ paper physically emerged. Production monitoring should add printer-state,
 paper-out, cover-open, disconnect, and physical-completion handling where the
 hardware exposes those signals.
 
-## Installation paths
+## Installation paths (current, Rust services)
 
 ```text
-/var/lib/infinite-scroll/posts/       artist-supplied source images
-/var/lib/infinite-scroll/print-ready/ generated PNG/ZPL and print records
+/var/lib/infinite-scroll/partial/  in-progress uploads (uploader)
+/var/lib/infinite-scroll/ready/    uploads ready for conversion (watcher input)
+/var/lib/infinite-scroll/complete/ the print library (watcher output, printer's source of truth)
+/var/lib/infinite-scroll/failed/   uploads the watcher could not convert
 ```
 
-The future service should log the source identity/hash, generated-job hash,
-submission timestamp, copy number, and write result. It must fail closed on a
-missing printer or write error and must serialize writes to prevent interleaved
-ZPL jobs.
+The `printer` app (see `crates/printer/src/printer_device.rs`) already
+serializes device writes and fails closed on a missing/busy printer, per
+this document's original requirement.
+
+Note: `/var/lib/infinite-scroll/posts/` and `/var/lib/infinite-scroll/print-ready/`
+were the old Python app's paths, kept on disk for one deploy cycle as a
+rollback reference (see Task 13 of `docs/superpowers/plans/2026-09-17-rust-print-services.md`)
+but no longer written to.

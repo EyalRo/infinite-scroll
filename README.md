@@ -29,7 +29,7 @@ responsibility:
   permanently offline. Also serves the static frontend directly (embedded
   at compile time), so no separate webserver is needed on the Pi.
 - **Static frontend** (`web/library/`) — mobile-first library management UI
-  (upload, remove, autoprint settings) plus a non-physical preview that
+  (upload, remove, scheduler preview) plus a non-physical preview that
   simulates the scheduler's next picks. Calls `uploader` and `printer`
   directly from the browser; no dedicated backend of its own.
 
@@ -89,6 +89,9 @@ Shared conversion/dithering/ZPL/auth/HTTP-helper code lives in
   the real hostnames and service-token credentials first.
 - Autoprint defaults to disabled (`printer/state.json`'s `enabled: false`)
   until the installation is ready to go live.
+- No EXIF auto-rotation in v1 — a deliberate simplification versus the old
+  Python pipeline. A phone photo taken in portrait may print rotated; this
+  is a known follow-up, not a silent gap.
 
 ## Deploying
 

@@ -41,10 +41,21 @@ pub fn get(complete_dir: &Path, id: &str) -> Option<CatalogItem> {
     serde_json::from_str(&text).ok()
 }
 
+/// An id containing a path separator or a `..` component could otherwise
+/// escape `complete_dir` when joined into a path -- reject it up front and
+/// let the caller treat it exactly like an unknown id (404), rather than
+/// giving path-traversal attempts a distinct error shape to probe with.
+fn is_valid_id(id: &str) -> bool {
+    !id.contains('/') && !id.contains("..")
+}
+
 /// Removes both the sidecar and the print-ready ZPL file. Returns the
 /// removed item's metadata so the caller (the HTTP API) can echo it back,
 /// or `None` if no such item exists (the caller answers 404).
 pub fn remove(complete_dir: &Path, id: &str) -> Option<CatalogItem> {
+    if !is_valid_id(id) {
+        return None;
+    }
     let item = get(complete_dir, id)?;
     let _ = fs::remove_file(zpl_path(complete_dir, id));
     let _ = fs::remove_file(sidecar_path(complete_dir, id));
@@ -115,6 +126,15 @@ mod tests {
     fn remove_returns_none_for_an_unknown_id() {
         let dir = temp_dir();
         assert!(remove(&dir, "missing").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_rejects_ids_containing_a_path_separator_or_dot_dot() {
+        let dir = temp_dir();
+        assert!(remove(&dir, "../../etc/passwd").is_none());
+        assert!(remove(&dir, "/etc/passwd").is_none());
+        assert!(remove(&dir, "foo/../bar").is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 

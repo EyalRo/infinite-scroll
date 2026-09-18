@@ -8,9 +8,22 @@ pub use zpl::ZplJob;
 /// The validated print canvas width (dots). See the Infinite Scroll
 /// knowledge page's "Validated printing method" section.
 pub const PRINT_WIDTH_PX: u32 = 650;
-const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
+pub const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 const MAX_HEIGHT_PX: u32 = 20_000;
+
+/// Current time as fractional Unix seconds. Shared by `watcher` and
+/// `printer` because values from this function cross process boundaries --
+/// `watcher` writes `added_at` into a catalog sidecar, and `printer` later
+/// compares it (and its own `next_print_at`/`last_printed_at`) against
+/// fresh calls to this same function -- so both sides must agree on the
+/// exact clock source and behavior on error.
+pub fn now_unix_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
 
 #[derive(Debug)]
 pub enum ImageFormatKind {
@@ -47,6 +60,10 @@ impl std::fmt::Display for ConvertError {
 /// resizes to PRINT_WIDTH_PX preserving aspect ratio, dithers to 1-bit,
 /// and packs into a ZPL job. The single entry point the watcher calls for
 /// every file it picks up from `ready/`.
+///
+/// Known v1 limitation: EXIF orientation is not read or applied, so a
+/// phone photo taken in portrait (which typically stores landscape pixel
+/// data plus an EXIF rotation tag) may print rotated.
 pub fn normalize_and_convert(bytes: &[u8]) -> Result<ZplJob, ConvertError> {
     if bytes.is_empty() {
         return Err(ConvertError("upload is empty".into()));

@@ -99,6 +99,9 @@ async function refreshCatalog() {
   const [items, status] = await Promise.all([fetchCatalog(), fetchStatus()]);
   renderCatalog(items);
   renderPreview(items, status);
+  if (status.failed_count > 0) {
+    uploadStatus.textContent += ` (${status.failed_count} upload(s) failed conversion — check the watcher)`;
+  }
 }
 
 uploadForm.addEventListener("submit", async (event) => {

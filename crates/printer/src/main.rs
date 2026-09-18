@@ -6,7 +6,7 @@ mod state;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use common::http::{header_value, json_response};
 use tiny_http::{Method, Server};
@@ -19,6 +19,7 @@ struct Config {
     token: String,
     state_path: PathBuf,
     complete_dir: PathBuf,
+    failed_dir: PathBuf,
     device_path: PathBuf,
     bind_addr: String,
     state_lock: std::sync::Mutex<()>,
@@ -29,14 +30,11 @@ fn config_from_env() -> Config {
         token: env::var("PRINTER_TOKEN").expect("PRINTER_TOKEN must be set"),
         state_path: PathBuf::from(env::var("PRINTER_STATE_PATH").expect("PRINTER_STATE_PATH must be set")),
         complete_dir: PathBuf::from(env::var("PRINTER_COMPLETE_DIR").expect("PRINTER_COMPLETE_DIR must be set")),
+        failed_dir: PathBuf::from(env::var("PRINTER_FAILED_DIR").expect("PRINTER_FAILED_DIR must be set")),
         device_path: PathBuf::from(env::var("PRINTER_DEVICE_PATH").unwrap_or_else(|_| "/dev/usb/lp0".to_string())),
         bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8082".to_string()),
         state_lock: std::sync::Mutex::new(()),
     }
-}
-
-fn now_unix_seconds() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64()
 }
 
 fn main() {
@@ -61,7 +59,8 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
     if *request.method() == Method::Options {
         return common::http::cors_preflight_response();
     }
-    let url = request.url().to_string();
+    let raw_url = request.url().to_string();
+    let url = raw_url.split('?').next().unwrap_or(&raw_url).to_string();
     let method = request.method().clone();
 
     if url == "/health" && method == Method::Get {
@@ -111,6 +110,7 @@ fn static_response(body: &'static str, content_type: &str) -> tiny_http::Respons
 fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let settings = state::load(&config.state_path);
     let items = library::list(&config.complete_dir);
+    let failed_count = std::fs::read_dir(&config.failed_dir).map(|entries| entries.count()).unwrap_or(0);
     json_response(
         200,
         &serde_json::json!({
@@ -119,6 +119,7 @@ fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u
                 "busy": printer_device::is_busy(),
             },
             "catalog_count": items.len(),
+            "failed_count": failed_count,
             "autoprint": {
                 "enabled": settings.enabled,
                 "min_minutes": settings.min_minutes,
@@ -144,7 +145,12 @@ fn configure_autoprint(config: &Config, request: &mut tiny_http::Request) -> tin
         return json_response(400, &serde_json::json!({"error": "enabled must be a boolean"}));
     };
 
-    let _guard = config.state_lock.lock().unwrap();
+    // A poisoned lock still guards a plain JSON struct, not something that can be
+    // corrupted by a panic mid-mutation in any way that matters here -- recovering
+    // it is preferable to letting every subsequent .lock().unwrap() panic too,
+    // which (since only the panicking thread dies, not the process) would freeze
+    // the scheduler forever without systemd's Restart=always ever kicking in.
+    let _guard = config.state_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut settings = state::load(&config.state_path);
     if let Some(value) = payload.get("min_minutes").and_then(|v| v.as_f64()) {
         settings.min_minutes = value;
@@ -166,7 +172,7 @@ fn configure_autoprint(config: &Config, request: &mut tiny_http::Request) -> tin
     settings.enabled = enabled;
     settings.last_error = None;
     settings.next_print_at = if enabled {
-        Some(now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()))
+        Some(common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()))
     } else {
         None
     };
@@ -194,26 +200,33 @@ fn scheduler_loop(config: Arc<Config>) {
     // save at the end of the loop.
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        let _guard = config.state_lock.lock().unwrap();
+        let _guard = config.state_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut settings = state::load(&config.state_path);
+        // `state::load` intentionally tolerates any parseable JSON, including a
+        // hand-edited state.json -- clamp to the same bounds POST /autoprint
+        // enforces (min > 0, max within 7 days) so a corrupted or hand-edited
+        // `min_minutes: 0, max_minutes: 0` can't make this loop fire on every
+        // 1-second tick.
+        settings.min_minutes = settings.min_minutes.max(1.0).min(10_080.0);
+        settings.max_minutes = settings.max_minutes.max(settings.min_minutes).min(10_080.0);
         if !settings.enabled {
             continue;
         }
         let Some(next_print_at) = settings.next_print_at else {
             settings.next_print_at = Some(
-                now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+                common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
             );
             let _ = state::save(&config.state_path, &settings);
             continue;
         };
-        if now_unix_seconds() < next_print_at {
+        if common::now_unix_seconds() < next_print_at {
             continue;
         }
 
         let items = library::list(&config.complete_dir);
         let Some(chosen) = scheduler::choose_item(&items, settings.ordering, &settings.last_item_id, &mut rand::thread_rng()).cloned() else {
             settings.next_print_at = Some(
-                now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+                common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
             );
             let _ = state::save(&config.state_path, &settings);
             continue;
@@ -224,7 +237,7 @@ fn scheduler_loop(config: Arc<Config>) {
             Err(error) => {
                 settings.last_error = Some(format!("failed to read print job for {}: {error}", chosen.id));
                 settings.next_print_at = Some(
-                    now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+                    common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
                 );
                 let _ = state::save(&config.state_path, &settings);
                 continue;
@@ -233,7 +246,7 @@ fn scheduler_loop(config: Arc<Config>) {
 
         let result = printer_device::print_zpl(&config.device_path, &zpl_text, Duration::from_secs(15));
         if result.success {
-            let printed_at = now_unix_seconds();
+            let printed_at = common::now_unix_seconds();
             let _ = library::mark_printed(&config.complete_dir, &chosen.id, printed_at);
             settings.last_item_id = Some(chosen.id.clone());
             settings.last_error = None;
@@ -242,7 +255,7 @@ fn scheduler_loop(config: Arc<Config>) {
             settings.last_error = Some(result.message);
         }
         settings.next_print_at = Some(
-            now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+            common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
         );
         let _ = state::save(&config.state_path, &settings);
     }

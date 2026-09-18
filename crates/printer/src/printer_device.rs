@@ -34,10 +34,11 @@ fn preflight(zpl_text: &str, device_path: &Path) -> Option<String> {
     None
 }
 
-/// Serialized (one write at a time) and bounded (default 15s) -- see
-/// app/printer.py's module docstring for the 2026-09-13 incident this
-/// exists to prevent: a stuck/offline printer must never hang the process
-/// indefinitely.
+/// Serialized (one write at a time) and bounded (default 15s) -- this
+/// exists because of a 2026-09-13 incident in the old Python pipeline,
+/// where a stuck/offline printer left a raw device write hanging
+/// indefinitely and wedged the whole process; the bounded timeout plus the
+/// `AtomicBool` serialization above are what prevent a repeat here.
 pub fn print_zpl(device_path: &Path, zpl_text: &str, timeout: Duration) -> PrintResult {
     if let Some(error) = preflight(zpl_text, device_path) {
         return PrintResult { success: false, message: error };

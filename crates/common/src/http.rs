@@ -46,4 +46,19 @@ mod tests {
         let response = json_response(201, &serde_json::json!({"ok": true}));
         assert_eq!(response.status_code().0, 201);
     }
+
+    #[test]
+    fn with_cors_sets_the_exact_expected_header_values() {
+        let response = with_cors(json_response(200, &serde_json::json!({})));
+        let expected: &[(&str, &str)] = &[
+            ("Access-Control-Allow-Origin", "https://library.infinite-scroll.art.virtualdino.com"),
+            ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Authorization, Content-Type"),
+            ("Access-Control-Allow-Credentials", "true"),
+        ];
+        for (name, value) in expected {
+            let found = response.headers().iter().find(|header| header.field.as_str().as_str().eq_ignore_ascii_case(name));
+            assert_eq!(found.map(|header| header.value.as_str()), Some(*value), "missing or wrong value for header {name}");
+        }
+    }
 }

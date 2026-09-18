@@ -6,10 +6,12 @@ After=network.target
 Type=simple
 User=stags
 SupplementaryGroups=lp
+StateDirectory=infinite-scroll
 WorkingDirectory=/home/stags/infinite-scroll
 Environment=BIND_ADDR=127.0.0.1:8082
 Environment=PRINTER_STATE_PATH=/var/lib/infinite-scroll/printer/state.json
 Environment=PRINTER_COMPLETE_DIR=/var/lib/infinite-scroll/complete
+Environment=PRINTER_FAILED_DIR=/var/lib/infinite-scroll/failed
 Environment=PRINTER_DEVICE_PATH=/dev/usb/lp0
 EnvironmentFile=/etc/infinite-scroll/printer.env
 ExecStart=/home/stags/infinite-scroll/bin/printer

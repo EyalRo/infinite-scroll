@@ -6,8 +6,6 @@ use std::path::PathBuf;
 use common::http::{header_value, json_response};
 use tiny_http::{Method, Server};
 
-const MAX_BODY_BYTES: u64 = 20 * 1024 * 1024;
-
 struct Config {
     token: String,
     partial_dir: PathBuf,
@@ -43,11 +41,14 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
         return common::http::cors_preflight_response();
     }
 
-    if request.url() == "/health" && *request.method() == Method::Get {
+    let raw_url = request.url().to_string();
+    let path = raw_url.split('?').next().unwrap_or(&raw_url);
+
+    if path == "/health" && *request.method() == Method::Get {
         return common::http::with_cors(json_response(200, &serde_json::json!({"status": "ok"})));
     }
 
-    if request.url() != "/uploads" || *request.method() != Method::Post {
+    if path != "/uploads" || *request.method() != Method::Post {
         return common::http::with_cors(json_response(404, &serde_json::json!({"error": "not found"})));
     }
 
@@ -58,7 +59,7 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
     }
 
     let response = if let Some(length) = request.body_length() {
-        if length as u64 > MAX_BODY_BYTES {
+        if length as u64 > common::MAX_UPLOAD_BYTES as u64 {
             json_response(413, &serde_json::json!({"error": "upload exceeds the 20 MB limit"}))
         } else {
             handle_upload(config, request)
@@ -72,10 +73,10 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
 
 fn handle_upload(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let mut bytes = Vec::new();
-    if let Err(error) = request.as_reader().take(MAX_BODY_BYTES + 1).read_to_end(&mut bytes) {
+    if let Err(error) = request.as_reader().take(common::MAX_UPLOAD_BYTES as u64 + 1).read_to_end(&mut bytes) {
         return json_response(400, &serde_json::json!({"error": format!("failed to read request body: {error}")}));
     }
-    if bytes.len() as u64 > MAX_BODY_BYTES {
+    if bytes.len() as u64 > common::MAX_UPLOAD_BYTES as u64 {
         return json_response(413, &serde_json::json!({"error": "upload exceeds the 20 MB limit"}));
     }
 

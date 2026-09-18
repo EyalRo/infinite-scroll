@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=stags
+StateDirectory=infinite-scroll
 WorkingDirectory=/home/stags/infinite-scroll
 Environment=WATCHER_READY_DIR=/var/lib/infinite-scroll/ready
 Environment=WATCHER_COMPLETE_DIR=/var/lib/infinite-scroll/complete

@@ -8,7 +8,7 @@ User=stags
 SupplementaryGroups=lp
 StateDirectory=infinite-scroll
 WorkingDirectory=/home/stags/infinite-scroll
-Environment=BIND_ADDR=127.0.0.1:8082
+Environment=BIND_ADDR=0.0.0.0:8082
 Environment=PRINTER_STATE_PATH=/var/lib/infinite-scroll/printer/state.json
 Environment=PRINTER_COMPLETE_DIR=/var/lib/infinite-scroll/complete
 Environment=PRINTER_FAILED_DIR=/var/lib/infinite-scroll/failed

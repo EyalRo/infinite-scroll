@@ -7,7 +7,7 @@ Type=simple
 User=stags
 StateDirectory=infinite-scroll
 WorkingDirectory=/home/stags/infinite-scroll
-Environment=BIND_ADDR=127.0.0.1:8081
+Environment=BIND_ADDR=0.0.0.0:8081
 Environment=UPLOADER_PARTIAL_DIR=/var/lib/infinite-scroll/partial
 Environment=UPLOADER_READY_DIR=/var/lib/infinite-scroll/ready
 EnvironmentFile=/etc/infinite-scroll/uploader.env

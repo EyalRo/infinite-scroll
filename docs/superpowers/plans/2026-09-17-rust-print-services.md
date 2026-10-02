@@ -1,5 +1,7 @@
 # Rust Print Services Implementation Plan
 
+> **Note:** hostnames in this historical plan (`*.infinite-scroll.art.virtualdino.com`) were superseded by flat `infinite-scroll-*.virtualdino.com` names. See `docs/cloudflare-tunnel-access-setup.md` for the current ones.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the entire Python/Flask `infinite-scroll` app with three small, independent Rust services (uploader, watcher/converter, printer) plus a static mobile-first web frontend, deployed to the Raspberry Pi 4, each reachable at its own `*.infinite-scroll.art.virtualdino.com` hostname behind Cloudflare Access.

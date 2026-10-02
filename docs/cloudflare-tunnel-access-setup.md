@@ -1,5 +1,13 @@
 # Cloudflare Tunnel + Access setup for the 3 new hostnames
 
+Hostnames are flat (`infinite-scroll-*.virtualdino.com`): the free wildcard
+certificate covers only one subdomain level, so nested names such as
+`*.infinite-scroll.art.virtualdino.com` do not work. `infinite-scroll-library`
+is the name the `printer` service's CORS configuration expects. The web UI
+is same-origin (it is served by `printer`, which proxies uploads to
+`uploader`), so a browser needs only that one hostname; `upload` and
+`printer` are for machine callers such as the MCP layer.
+
 Three new local ports need Tunnel ingress rules and Access Applications,
 matching the existing `infinite-scroll-api.virtualdino.com` / MediaWatch
 pattern (human session + service token on one Access Application per
@@ -20,11 +28,11 @@ current `infinite-scroll-api` rule already targets), before the final
 catch-all 404 rule:
 
 ```yaml
-- hostname: upload.infinite-scroll.art.virtualdino.com
+- hostname: infinite-scroll-upload.virtualdino.com
   service: http://<pi-lan-ip>:8081
-- hostname: printer.infinite-scroll.art.virtualdino.com
+- hostname: infinite-scroll-printer.virtualdino.com
   service: http://<pi-lan-ip>:8082
-- hostname: library.infinite-scroll.art.virtualdino.com
+- hostname: infinite-scroll-library.virtualdino.com
   service: http://<pi-lan-ip>:8082
 ```
 
@@ -52,7 +60,7 @@ CNAMEs, to avoid a conflicting duplicate record.
 
 ## 3. Access Applications (one per hostname, three total)
 
-For each of `upload.*`, `printer.*`, `library.*`:
+For each of `infinite-scroll-upload`, `infinite-scroll-printer`, `infinite-scroll-library`:
 
 - Create a self-hosted Access Application for that exact hostname.
 - Add two policies (both "Allow"):
@@ -85,7 +93,7 @@ env files yet.
 
 ## 4. After this is done
 
-- Confirm `curl -I https://upload.infinite-scroll.art.virtualdino.com/health`
+- Confirm `curl -I https://infinite-scroll-upload.virtualdino.com/health`
   (with no credentials) returns Cloudflare Access's login challenge, not
   a raw 200 — proves the Tunnel + Access wiring is live before anything
   tries to use it for real.

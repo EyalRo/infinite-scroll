@@ -36,18 +36,22 @@ responsibility:
   Android app: `android/`. Protocol: `docs/ble-protocol.md`.
 - **Static frontend** (`web/library/`) — mobile-first library management UI
   (upload, remove, scheduler preview) plus a non-physical preview that
-  simulates the scheduler's next picks. Calls `uploader` and `printer`
-  directly from the browser; no dedicated backend of its own.
+  simulates the scheduler's next picks. Served by `printer` and calls only
+  its own origin (uploads are proxied to `uploader` over loopback); no
+  dedicated backend of its own.
 
-All three services are reachable on the public internet, gated by Cloudflare
-Access (human session + service token), matching the pattern already used
-for MediaWatch:
+The services are meant to be reachable on the public internet, gated by
+Cloudflare Access (human session + service token), matching the pattern
+already used for MediaWatch. Hostnames are flat
+(`infinite-scroll-*.virtualdino.com`) because the free wildcard certificate
+covers only one level. The browser UI needs only the library hostname;
+`upload` and `printer` are for machine callers:
 
 | Hostname | Service | Port |
 |---|---|---|
-| `upload.infinite-scroll.art.virtualdino.com` | uploader | 8081 |
-| `printer.infinite-scroll.art.virtualdino.com` | printer (API) | 8082 |
-| `library.infinite-scroll.art.virtualdino.com` | printer (static frontend) | 8082 |
+| `infinite-scroll-upload.virtualdino.com` | uploader | 8081 |
+| `infinite-scroll-printer.virtualdino.com` | printer (API) | 8082 |
+| `infinite-scroll-library.virtualdino.com` | printer (static frontend) | 8082 |
 
 Shared conversion/dithering/ZPL/auth/HTTP-helper code lives in
 `crates/common`, used by all three binaries.

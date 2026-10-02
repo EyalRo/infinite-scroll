@@ -1,0 +1,15 @@
+// Lets btcontrol (which runs as the "stags" user in a systemd service, with no
+// login session) scan for Wi-Fi networks and switch networks through
+// NetworkManager. NetworkManager's stock rule only trusts processes in an
+// active login session, which a service never has. The account already has
+// passwordless sudo, so this grants it nothing it could not do anyway.
+// Deliberately omitted: enable-disable-wifi (turning the radio off) and reload.
+polkit.addRule(function(action, subject) {
+    if (subject.user == "stags" &&
+        (action.id == "org.freedesktop.NetworkManager.wifi.scan" ||
+         action.id == "org.freedesktop.NetworkManager.network-control" ||
+         action.id == "org.freedesktop.NetworkManager.settings.modify.system" ||
+         action.id == "org.freedesktop.NetworkManager.settings.modify.own")) {
+        return polkit.Result.YES;
+    }
+});

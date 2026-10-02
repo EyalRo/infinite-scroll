@@ -25,6 +25,8 @@ import art.infinitescroll.protocol.Schedule
 import art.infinitescroll.protocol.Stats
 import art.infinitescroll.protocol.Status
 import art.infinitescroll.protocol.Uploader
+import art.infinitescroll.protocol.WifiNetwork
+import art.infinitescroll.protocol.WifiStatus
 import kotlinx.coroutines.Job as CoroutineJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,6 +53,11 @@ data class UiState(
     /** Live values read from the printer (e.g. `darkness`); empty if it could not be reached. */
     val printerValues: Map<String, Long> = emptyMap(),
     val printerSettingsError: String? = null,
+    /** The Pi's Wi-Fi: current network and the last join attempt. */
+    val wifi: WifiStatus? = null,
+    /** Result of the last scan, strongest first; null until a scan was run. */
+    val wifiNetworks: List<WifiNetwork>? = null,
+    val wifiScanning: Boolean = false,
     /** Library thumbnails by item id, fetched lazily as items scroll into view. */
     val thumbnails: Map<String, ImageBitmap> = emptyMap(),
     val uploadProgress: Float? = null,
@@ -165,6 +172,16 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun refreshStatus(api: InstallationApi) { val s = api.status(); _state.update { it.copy(status = s) } }
     private suspend fun refreshLibrary(api: InstallationApi) { val l = api.library(); _state.update { it.copy(library = l) } }
+    /** Never throws: a Pi without Wi-Fi support must not abort the refresh of everything else. */
+    private suspend fun refreshWifi(api: InstallationApi) {
+        try {
+            val s = api.wifiStatus()
+            _state.update { it.copy(wifi = s) }
+        } catch (e: Exception) {
+            // Leave the previous value; the Wi-Fi section simply shows nothing new.
+        }
+    }
+
     /** Never throws: a printer that is off must not abort the refresh of everything else. */
     private suspend fun refreshPrinterSettings(api: InstallationApi) {
         try {
@@ -186,11 +203,13 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
         val history = api.history(50); val stats = api.stats(); val caps = api.capabilities()
         _state.update { it.copy(history = history, stats = stats, capabilities = caps) }
         refreshPrinterSettings(api)
+        refreshWifi(api)
     }
 
     fun refreshPrinting() = launchOp("Refresh") { api ->
         refreshJobs(api); refreshStatus(api)
         refreshPrinterSettings(api)
+        refreshWifi(api)
         val history = api.history(50); val stats = api.stats()
         _state.update { it.copy(history = history, stats = stats) }
     }
@@ -270,6 +289,49 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
                 thumbnailsRequested.remove(id)
             }
         }
+    }
+
+    // ---- Wi-Fi --------------------------------------------------------------
+
+    fun scanWifi() {
+        val api = api ?: return notice(NoticeKind.ERROR, "Not connected")
+        _state.update { it.copy(wifiScanning = true) }
+        viewModelScope.launch {
+            try {
+                val networks = api.wifiScan()
+                _state.update { it.copy(wifiNetworks = networks) }
+                refreshWifi(api)
+            } catch (e: Exception) {
+                notice(NoticeKind.ERROR, "Wi-Fi scan failed: ${describe(e)}")
+            } finally {
+                _state.update { it.copy(wifiScanning = false) }
+            }
+        }
+    }
+
+    /**
+     * Asks the Pi to join a network, then follows the attempt: the Pi rolls back
+     * to its previous network if the new one fails, and this app stays connected
+     * over Bluetooth either way.
+     */
+    fun connectWifi(ssid: String, password: String) = launchOp("Wi-Fi") { api ->
+        api.wifiConnect(ssid, password)
+        // Mark it locally at once; the Pi's own record takes over on the first poll.
+        _state.update { s -> s.copy(wifi = (s.wifi ?: WifiStatus()).copy(attempt = art.infinitescroll.protocol.WifiAttempt("connecting", ssid))) }
+        val deadline = System.currentTimeMillis() + 90_000
+        while (System.currentTimeMillis() < deadline) {
+            delay(2_000)
+            val status = api.wifiStatus()
+            _state.update { it.copy(wifi = status) }
+            when (status.attempt.state) {
+                "connected" -> {
+                    _state.update { it.copy(wifiNetworks = null) }
+                    return@launchOp notice(NoticeKind.COMPLETED, "The Pi is now on $ssid")
+                }
+                "failed" -> return@launchOp notice(NoticeKind.ERROR, status.attempt.error ?: "Could not connect to $ssid")
+            }
+        }
+        notice(NoticeKind.ERROR, "Still waiting for the Pi to join $ssid; check again in a moment")
     }
 
     fun upload(uri: Uri) {

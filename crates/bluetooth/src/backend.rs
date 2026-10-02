@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::handler::{Backend, BackendError, BackendResult};
+use crate::handler::{Backend, BackendError, BackendResult, NmOutput};
 
 pub struct HttpBackend {
     pub printer_url: String,
@@ -61,6 +61,10 @@ impl Backend for HttpBackend {
         (common::now_unix_seconds() * 1000.0) as i64
     }
 
+    fn nmcli(&self, args: &[&str], timeout: Duration) -> Result<NmOutput, String> {
+        Self::run_nmcli(args, timeout)
+    }
+
     fn set_clock_ms(&self, unix_ms: i64) -> Result<(), String> {
         let spec = libc::timespec { tv_sec: (unix_ms / 1000) as libc::time_t, tv_nsec: ((unix_ms % 1000) * 1_000_000) as libc::c_long };
         // Needs CAP_SYS_TIME, granted to this unit alone in btcontrol.service.
@@ -68,6 +72,32 @@ impl Backend for HttpBackend {
             Ok(())
         } else {
             Err(std::io::Error::last_os_error().to_string())
+        }
+    }
+}
+
+impl HttpBackend {
+    /// Runs `nmcli` (C locale, no stdin) and waits at most `timeout`. NetworkManager
+    /// authorizes this unit through the polkit rule in `deploy/`.
+    fn run_nmcli(args: &[&str], timeout: Duration) -> Result<NmOutput, String> {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let output = std::process::Command::new("nmcli")
+                .args(&args)
+                .env("LC_ALL", "C")
+                .stdin(std::process::Stdio::null())
+                .output();
+            let _ = sender.send(output);
+        });
+        match receiver.recv_timeout(timeout) {
+            Ok(Ok(output)) => Ok(NmOutput {
+                success: output.status.success(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            }),
+            Ok(Err(error)) => Err(format!("could not run nmcli: {error}")),
+            Err(_) => Err("nmcli timed out".to_string()),
         }
     }
 }

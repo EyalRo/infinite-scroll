@@ -8,12 +8,13 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use crate::protocol::*;
+use crate::wifi;
 
 /// Upload sessions idle for longer than this are discarded.
 const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -34,6 +35,13 @@ pub enum BackendError {
 
 pub type BackendResult = Result<(u16, Value), BackendError>;
 
+/// What `nmcli` printed and whether it succeeded.
+pub struct NmOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 pub trait Backend: Send + Sync {
     /// Calls the printer service's HTTP API.
     fn printer(&self, method: &str, path: &str, body: Option<&Value>) -> BackendResult;
@@ -43,6 +51,8 @@ pub trait Backend: Send + Sync {
     fn submit_upload(&self, bytes: &[u8]) -> BackendResult;
     fn clock_now_ms(&self) -> i64;
     fn set_clock_ms(&self, unix_ms: i64) -> Result<(), String>;
+    /// Runs NetworkManager's CLI with these arguments (no shell is involved).
+    fn nmcli(&self, args: &[&str], timeout: Duration) -> Result<NmOutput, String>;
 }
 
 struct UploadSession {
@@ -55,7 +65,8 @@ struct UploadSession {
 }
 
 pub struct Handler<B: Backend> {
-    backend: B,
+    backend: Arc<B>,
+    wifi_attempt: Arc<Mutex<WifiAttempt>>,
     upload: Mutex<Option<UploadSession>>,
     next_session: Mutex<u16>,
 }
@@ -112,9 +123,9 @@ fn digest(value: &Value) -> u64 {
     hasher.finish()
 }
 
-impl<B: Backend> Handler<B> {
+impl<B: Backend + 'static> Handler<B> {
     pub fn new(backend: B) -> Self {
-        Handler { backend, upload: Mutex::new(None), next_session: Mutex::new(1) }
+        Handler { backend: Arc::new(backend), wifi_attempt: Arc::new(Mutex::new(WifiAttempt::default())), upload: Mutex::new(None), next_session: Mutex::new(1) }
     }
 
     /// Parses and executes one request body, always producing a response
@@ -201,6 +212,10 @@ impl<B: Backend> Handler<B> {
                     .ok_or_else(|| OpError::new(ErrorCode::InvalidArgument, "value must be an integer"))?;
                 self.printer_op("POST", "/printer/settings", Some(&json!({"key": key, "value": value})), Disposition::Completed)
             }
+
+            "wifi.status" => self.wifi_status(),
+            "wifi.scan" => self.wifi_scan(),
+            "wifi.connect" => self.wifi_connect(args),
 
             "sched.get" => self.sched_get(),
             "sched.set" => self.sched_set(args),
@@ -471,6 +486,142 @@ impl<B: Backend> Handler<B> {
     }
 }
 
+// ---- Wi-Fi ---------------------------------------------------------------
+//
+// Reading is `nmcli device wifi list`; connecting creates a profile this
+// service owns (`wifi::PROFILE_PREFIX`), brings it up, and on failure deletes
+// it and re-activates the network the Pi was on. The password is passed to
+// nmcli as an argument and is never logged or returned.
+
+const NM_QUICK: Duration = Duration::from_secs(15);
+const NM_CONNECT: Duration = Duration::from_secs(45);
+/// How long a rescan is given before the list is read.
+#[cfg(not(test))]
+const WIFI_RESCAN_WAIT: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const WIFI_RESCAN_WAIT: Duration = Duration::ZERO;
+
+#[derive(Clone, Default)]
+pub struct WifiAttempt {
+    /// `idle`, `connecting`, `connected` or `failed`.
+    state: &'static str,
+    ssid: Option<String>,
+    error: Option<String>,
+}
+
+impl WifiAttempt {
+    fn to_json(&self) -> Value {
+        json!({"state": if self.state.is_empty() { "idle" } else { self.state }, "ssid": self.ssid, "error": self.error})
+    }
+}
+
+fn nm_unavailable(error: String) -> OpError {
+    OpError::new(ErrorCode::Unavailable, format!("NetworkManager is not available: {error}"))
+}
+
+impl<B: Backend + 'static> Handler<B> {
+    fn wifi_list(&self, rescan: bool) -> Result<Vec<wifi::Network>, OpError> {
+        if rescan {
+            // Scanning is throttled by the driver; a refusal just means the cached list is fresh enough.
+            let _ = self.backend.nmcli(&["device", "wifi", "rescan"], NM_QUICK);
+            std::thread::sleep(WIFI_RESCAN_WAIT);
+        }
+        let output = self
+            .backend
+            .nmcli(&["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "no"], NM_QUICK)
+            .map_err(nm_unavailable)?;
+        if !output.success {
+            return Err(OpError::new(ErrorCode::Unavailable, "could not list Wi-Fi networks"));
+        }
+        Ok(wifi::parse_networks(&output.stdout))
+    }
+
+    fn wifi_status(&self) -> OpResult {
+        let networks = self.wifi_list(false)?;
+        let attempt = self.wifi_attempt.lock().unwrap_or_else(|p| p.into_inner()).to_json();
+        let result = match wifi::current(&networks) {
+            Some(n) => json!({"connected": true, "ssid": n.ssid, "signal": n.signal, "security": n.security, "attempt": attempt}),
+            None => json!({"connected": false, "ssid": null, "signal": 0, "security": null, "attempt": attempt}),
+        };
+        Ok((Disposition::Completed, result))
+    }
+
+    fn wifi_scan(&self) -> OpResult {
+        let networks = self.wifi_list(true)?;
+        Ok((Disposition::Completed, json!({"networks": wifi::networks_json(&networks)})))
+    }
+
+    fn wifi_connect(&self, args: &Value) -> OpResult {
+        let ssid = arg_str(args, "ssid")?.to_string();
+        let password = match args.get("password") {
+            None | Some(Value::Null) => String::new(),
+            Some(value) => value.as_str().ok_or_else(|| OpError::new(ErrorCode::InvalidArgument, "password must be a string"))?.to_string(),
+        };
+        wifi::validate_ssid(&ssid).map_err(|_| OpError::new(ErrorCode::InvalidArgument, "ssid must be 1-32 characters"))?;
+        wifi::validate_password(&password)
+            .map_err(|_| OpError::new(ErrorCode::InvalidArgument, "password must be 8-63 characters (or 64 hex digits)"))?;
+        {
+            let mut attempt = self.wifi_attempt.lock().unwrap_or_else(|p| p.into_inner());
+            if attempt.state == "connecting" {
+                return Err(OpError::new(ErrorCode::Conflict, "a Wi-Fi connection is already in progress"));
+            }
+            *attempt = WifiAttempt { state: "connecting", ssid: Some(ssid.clone()), error: None };
+        }
+        let backend = Arc::clone(&self.backend);
+        let attempt = Arc::clone(&self.wifi_attempt);
+        let target = ssid.clone();
+        std::thread::spawn(move || {
+            let outcome = run_wifi_connect(&*backend, &target, &password);
+            let mut slot = attempt.lock().unwrap_or_else(|p| p.into_inner());
+            *slot = match outcome {
+                Ok(()) => WifiAttempt { state: "connected", ssid: Some(target), error: None },
+                Err(message) => WifiAttempt { state: "failed", ssid: Some(target), error: Some(message) },
+            };
+        });
+        Ok((Disposition::Accepted, json!({"ssid": ssid})))
+    }
+}
+
+/// The name of the Wi-Fi profile that is active now, if any.
+fn active_wifi_profile<B: Backend>(backend: &B) -> Option<String> {
+    let output = backend.nmcli(&["-t", "-f", "NAME,TYPE", "connection", "show", "--active"], NM_QUICK).ok()?;
+    output.stdout.lines().map(wifi::split_terse).find(|f| f.len() >= 2 && f[1] == "802-11-wireless").map(|f| f[0].clone())
+}
+
+/// Joins `ssid`, rolling back to the previous network on failure. The error
+/// is a short message safe to show on a phone.
+fn run_wifi_connect<B: Backend>(backend: &B, ssid: &str, password: &str) -> Result<(), String> {
+    let previous = active_wifi_profile(backend);
+    let name = wifi::profile_name(ssid);
+    // A leftover profile of ours from an earlier attempt would be ambiguous.
+    let _ = backend.nmcli(&["connection", "delete", "id", &name], NM_QUICK);
+
+    let mut add = vec!["connection", "add", "type", "wifi", "con-name", &name, "ifname", "*", "ssid", ssid];
+    if !password.is_empty() {
+        add.extend(["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]);
+    }
+    match backend.nmcli(&add, NM_QUICK) {
+        Ok(out) if out.success => {}
+        _ => return Err("Could not save the network.".to_string()),
+    }
+
+    let failure = match backend.nmcli(&["--wait", "30", "connection", "up", "id", &name], NM_CONNECT) {
+        Ok(out) if out.success => return Ok(()),
+        Ok(out) => wifi::explain_failure(&out.stderr),
+        Err(_) => "The network did not answer in time.",
+    };
+
+    log::warn!("wifi: connecting to a network failed; rolling back");
+    let _ = backend.nmcli(&["connection", "delete", "id", &name], NM_QUICK);
+    let went_back = match previous {
+        Some(ref old) if *old != name => {
+            matches!(backend.nmcli(&["--wait", "30", "connection", "up", "id", old], NM_CONNECT), Ok(out) if out.success)
+        }
+        _ => false,
+    };
+    Err(if went_back { format!("{failure} Went back to the previous network.") } else { failure.to_string() })
+}
+
 fn backend_error(error: BackendError) -> OpError {
     match error {
         BackendError::Unreachable(message) => OpError::new(ErrorCode::Unavailable, message),
@@ -500,9 +651,38 @@ mod tests {
         clock_ms: StdMutex<i64>,
         uploads: StdMutex<Vec<Vec<u8>>>,
         autoprint_enabled: bool,
+        /// Every nmcli invocation, space-joined.
+        nm_calls: StdMutex<Vec<String>>,
+        /// stderr to fail bringing up a new profile with; `None` succeeds.
+        nm_up_failure: Option<&'static str>,
+        /// How long bringing a profile up takes.
+        nm_up_delay: Option<Duration>,
     }
 
+    const NM_LIST: &str = "*:Fred is SPEED:61:WPA2 WPA3\n :Fred is SPEED:80:WPA2 WPA3\n :Cafe Guest:40:--\n";
+
     impl Backend for Fake {
+        fn nmcli(&self, args: &[&str], _timeout: Duration) -> Result<NmOutput, String> {
+            self.nm_calls.lock().unwrap().push(args.join(" "));
+            let ok = |stdout: &str| Ok(NmOutput { success: true, stdout: stdout.to_string(), stderr: String::new() });
+            if args.contains(&"list") {
+                return ok(NM_LIST);
+            }
+            if args.contains(&"--active") {
+                return ok("Home:802-11-wireless\nlo:loopback\n");
+            }
+            if args.contains(&"up") {
+                if let Some(delay) = self.nm_up_delay {
+                    std::thread::sleep(delay);
+                }
+                let is_new = args.iter().any(|a| a.starts_with("infinite-scroll-"));
+                if let (true, Some(stderr)) = (is_new, self.nm_up_failure) {
+                    return Ok(NmOutput { success: false, stdout: String::new(), stderr: stderr.to_string() });
+                }
+            }
+            ok("")
+        }
+
         fn printer(&self, method: &str, path: &str, body: Option<&Value>) -> BackendResult {
             self.calls.lock().unwrap().push((method.into(), path.into(), body.cloned()));
             match (method, path) {
@@ -540,6 +720,107 @@ mod tests {
 
     fn handler() -> Handler<Fake> {
         Handler::new(Fake { clock_ms: StdMutex::new(1_800_000_000_000), ..Default::default() })
+    }
+
+    // ---- Wi-Fi -------------------------------------------------------------
+
+    /// Polls `wifi.status` until the connect attempt leaves `connecting`.
+    fn wait_for_attempt(handler: &Handler<Fake>) -> Value {
+        for _ in 0..200 {
+            let status = call(handler, "wifi.status", json!({}));
+            if status["result"]["attempt"]["state"] != "connecting" {
+                return status["result"]["attempt"].clone();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the connect attempt never finished");
+    }
+
+    #[test]
+    fn wifi_status_reports_the_current_network_and_signal() {
+        let status = call(&handler(), "wifi.status", json!({}));
+        assert_eq!(status["ok"], true);
+        assert_eq!(status["result"]["connected"], true);
+        assert_eq!(status["result"]["ssid"], "Fred is SPEED");
+        assert_eq!(status["result"]["signal"], 80);
+        assert_eq!(status["result"]["attempt"]["state"], "idle");
+    }
+
+    #[test]
+    fn wifi_scan_lists_each_network_once() {
+        let scan = call(&handler(), "wifi.scan", json!({}));
+        let networks = scan["result"]["networks"].as_array().unwrap();
+        assert_eq!(networks.len(), 2);
+        assert_eq!(networks[0]["ssid"], "Fred is SPEED");
+        assert_eq!(networks[1]["security"], "open");
+    }
+
+    #[test]
+    fn wifi_connect_is_accepted_and_succeeds() {
+        let h = handler();
+        let response = call(&h, "wifi.connect", json!({"ssid": "Cafe Guest", "password": "correct horse"}));
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["disposition"], "accepted");
+        assert_eq!(wait_for_attempt(&h)["state"], "connected");
+        let calls = h.backend.nm_calls.lock().unwrap().join("\n");
+        assert!(calls.contains("connection add type wifi con-name infinite-scroll-Cafe Guest"));
+        assert!(calls.contains("wifi-sec.psk correct horse"));
+        assert!(calls.contains("connection up id infinite-scroll-Cafe Guest"));
+    }
+
+    #[test]
+    fn an_open_network_gets_no_security_settings() {
+        let h = handler();
+        call(&h, "wifi.connect", json!({"ssid": "Cafe Guest"}));
+        assert_eq!(wait_for_attempt(&h)["state"], "connected");
+        assert!(!h.backend.nm_calls.lock().unwrap().join("\n").contains("wifi-sec"));
+    }
+
+    #[test]
+    fn a_failed_connection_rolls_back_to_the_previous_network() {
+        let h = Handler::new(Fake { nm_up_failure: Some("Error: Connection activation failed: Secrets were required, but not provided."), ..Default::default() });
+        call(&h, "wifi.connect", json!({"ssid": "Fred is SPEED", "password": "wrong password"}));
+        let attempt = wait_for_attempt(&h);
+        assert_eq!(attempt["state"], "failed");
+        let error = attempt["error"].as_str().unwrap();
+        assert!(error.contains("rejected the password") && error.contains("Went back"), "{error}");
+        let calls = h.backend.nm_calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c == "connection delete id infinite-scroll-Fred is SPEED"));
+        let last_up = calls.iter().rev().find(|c| c.contains("connection up")).unwrap();
+        assert_eq!(last_up, "--wait 30 connection up id Home");
+    }
+
+    #[test]
+    fn the_password_never_appears_in_any_response() {
+        let h = Handler::new(Fake { nm_up_failure: Some("Error: Secrets were required"), ..Default::default() });
+        let accepted = call(&h, "wifi.connect", json!({"ssid": "Cafe Guest", "password": "s3cret-passphrase"}));
+        let status = {
+            wait_for_attempt(&h);
+            call(&h, "wifi.status", json!({}))
+        };
+        for response in [accepted, status] {
+            assert!(!response.to_string().contains("s3cret"));
+        }
+    }
+
+    #[test]
+    fn bad_wifi_arguments_are_rejected_before_touching_networkmanager() {
+        let h = handler();
+        for args in [json!({"ssid": ""}), json!({"ssid": "ok", "password": "short"}), json!({"password": "longenough1"}), json!({"ssid": "ok", "password": 5})] {
+            let response = call(&h, "wifi.connect", args);
+            assert_eq!(response["ok"], false);
+        }
+        assert!(h.backend.nm_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_second_connect_while_one_is_running_is_a_conflict() {
+        let h = Handler::new(Fake { nm_up_delay: Some(Duration::from_millis(300)), ..Default::default() });
+        assert_eq!(call(&h, "wifi.connect", json!({"ssid": "Cafe Guest"}))["ok"], true);
+        let second = call(&h, "wifi.connect", json!({"ssid": "Other Net"}));
+        assert_eq!(second["ok"], false);
+        assert_eq!(second["error"]["code"], "conflict");
+        assert_eq!(wait_for_attempt(&h)["state"], "connected");
     }
 
     #[test]

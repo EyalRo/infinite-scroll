@@ -107,6 +107,9 @@ service is down), `backend_error`, `upload_incomplete`, `unsupported`,
 | `printer.settings.get` | – | completed | `schema`, `values{}` |
 | `printer.settings.set` | `key`, `value` (int) | completed | `success` |
 | `printer.print_config` | – | completed | `success`; the printer prints its own settings label |
+| `wifi.status` | – | completed | `connected`, `ssid`, `signal` (0–100), `security`, `attempt` `{state, ssid, error}` (`state`: `idle`/`connecting`/`connected`/`failed`) |
+| `wifi.scan` | – | completed | `networks[]` `{ssid, signal, security (open/wpa/enterprise), in_use}`: rescans (a few seconds), one entry per name with its strongest signal, current network first |
+| `wifi.connect` | `ssid`, `password`? (8–63 chars or 64 hex; omit for an open network) | **accepted** | `ssid`; poll `wifi.status` for the outcome |
 
 Times are Unix seconds (floats) except `clock`, which is milliseconds.
 `library.list` items: `id`, `original_filename`, `added_at`, `print_count`,
@@ -164,6 +167,10 @@ DPI), `counters_since`, `item_print_total`. Counters start when this
 version first ran; earlier prints are not backfilled. The previous app's
 "immediate vs backlog" split does not exist in the Rust services and is not
 reported.
+
+### Wi-Fi
+
+`wifi.connect` creates a NetworkManager profile (`infinite-scroll-<ssid>`), brings it up (up to 30 s) and returns at once as *accepted*; the outcome is `wifi.status.attempt`. If the network fails, the profile is deleted and the Pi re-activates the network it was on, so a wrong password never strands it; Bluetooth is unaffected either way. WPA-personal and open networks only (the app does not offer `enterprise` networks). The password is passed to `nmcli` and is never logged or returned. NetworkManager authorizes the service through `deploy/50-infinite-scroll-wifi.rules`: NM's stock polkit rule only trusts active login sessions, which a service does not have.
 
 ### Printer settings
 

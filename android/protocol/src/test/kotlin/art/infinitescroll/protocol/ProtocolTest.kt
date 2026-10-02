@@ -224,3 +224,26 @@ class LibraryPrinterAndScheduleTest {
         assertEquals(listOf("printer.print_config"), pi.ops)
     }
 }
+
+class WifiTest {
+    @Test fun barsFollowSignalWithoutExposingNumbers() {
+        assertEquals(listOf(0, 1, 1, 2, 2, 3, 3, 4, 4), listOf(0, 1, 24, 25, 49, 50, 74, 75, 100).map(::wifiBars))
+    }
+
+    @Test fun statusAndNetworksParsePiShapes() {
+        val status = Wire.json.decodeFromString(
+            WifiStatus.serializer(),
+            """{"connected":true,"ssid":"Fred is SPEED","signal":61,"security":"wpa","attempt":{"state":"failed","ssid":"X","error":"The network rejected the password."},"future":1}""",
+        )
+        assertTrue(status.connected)
+        assertEquals("failed", status.attempt.state)
+        val scan = Wire.json.decodeFromString(WifiScan.serializer(), """{"networks":[{"ssid":"A","signal":80,"security":"open","in_use":true},{"ssid":"B"}]}""")
+        assertTrue(scan.networks[0].inUse)
+        assertEquals("wpa", scan.networks[1].security)
+    }
+
+    @Test fun anIdlePiStatusDefaultsSafely() {
+        val status = Wire.json.decodeFromString(WifiStatus.serializer(), """{"connected":false}""")
+        assertEquals("idle", status.attempt.state)
+    }
+}

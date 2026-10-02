@@ -187,6 +187,16 @@ class InstallationApi(val rpc: RpcClient) {
     /** The printer prints its own settings label. */
     suspend fun printConfig() { rpc.request("printer.print_config") }
 
+    suspend fun wifiStatus(): WifiStatus = decode(rpc.request("wifi.status"), WifiStatus.serializer())
+
+    /** Rescans on the Pi (takes a few seconds) and returns each nearby network once, strongest first. */
+    suspend fun wifiScan(): List<WifiNetwork> = decode(rpc.request("wifi.scan"), WifiScan.serializer()).networks
+
+    /** Accepted, not finished: poll [wifiStatus] for the outcome. An empty password means an open network. */
+    suspend fun wifiConnect(ssid: String, password: String) {
+        rpc.request("wifi.connect", jsonArgs("ssid" to ssid, "password" to password.ifEmpty { null }))
+    }
+
     /** Sets the Pi clock from the phone's clock; returns the Pi's resulting time. */
     suspend fun syncClock(nowMs: Long = System.currentTimeMillis()): Long =
         (rpc.request("sys.clock.set", jsonArgs("unix_ms" to nowMs)).result["unix_ms"] as JsonPrimitive).content.toLong()

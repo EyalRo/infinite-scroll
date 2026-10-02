@@ -76,6 +76,9 @@ ssh "$HOST" "cd /tmp && sudo mv $UNIT_NAMES /etc/systemd/system/ && sudo systemc
 
 if [ "$BTCONTROL_OK" = 1 ]; then
   echo "Preparing Bluetooth on the Pi..."
+  # btcontrol switches Wi-Fi through NetworkManager; see the rule for why polkit needs this.
+  scp deploy/50-infinite-scroll-wifi.rules "$HOST:/tmp/"
+  ssh "$HOST" "sudo install -m 644 -o root -g root /tmp/50-infinite-scroll-wifi.rules /etc/polkit-1/rules.d/50-infinite-scroll-wifi.rules && rm -f /tmp/50-infinite-scroll-wifi.rules"
   # btcontrol's EnvironmentFile: the same tokens as printer.env/uploader.env.
   # Created on the Pi from them if missing; token values never leave the Pi.
   ssh "$HOST" 'if ! sudo test -f /etc/infinite-scroll/bluetooth.env; then

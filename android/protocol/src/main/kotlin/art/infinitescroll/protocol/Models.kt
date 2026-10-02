@@ -149,3 +149,37 @@ data class Thumbnail(val id: String, val format: String = "jpeg", val width: Int
 
 @Serializable
 data class UploadAck(@SerialName("item_id") val itemId: String? = null, val filename: String? = null, val name: String = "")
+
+/** One nearby Wi-Fi network; `signal` is 0-100 and `security` is `open`, `wpa` or `enterprise` (unsupported). */
+@Serializable
+data class WifiNetwork(
+    val ssid: String,
+    val signal: Int = 0,
+    val security: String = "wpa",
+    @SerialName("in_use") val inUse: Boolean = false,
+)
+
+@Serializable
+data class WifiScan(val networks: List<WifiNetwork> = emptyList())
+
+/** The Pi's own record of the last join attempt: `idle`, `connecting`, `connected` or `failed`. */
+@Serializable
+data class WifiAttempt(val state: String = "idle", val ssid: String? = null, val error: String? = null)
+
+@Serializable
+data class WifiStatus(
+    val connected: Boolean = false,
+    val ssid: String? = null,
+    val signal: Int = 0,
+    val security: String? = null,
+    val attempt: WifiAttempt = WifiAttempt(),
+)
+
+/** Signal strength as a 0-4 bar count; the UI shows bars, never the number. */
+fun wifiBars(signal: Int): Int = when {
+    signal <= 0 -> 0
+    signal < 25 -> 1
+    signal < 50 -> 2
+    signal < 75 -> 3
+    else -> 4
+}

@@ -2,6 +2,7 @@ mod backend;
 mod gatt;
 mod handler;
 mod protocol;
+mod wifi;
 
 use std::env;
 use std::sync::Arc;

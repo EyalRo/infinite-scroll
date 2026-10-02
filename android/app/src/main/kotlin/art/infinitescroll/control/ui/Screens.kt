@@ -6,6 +6,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -46,10 +48,16 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -59,6 +67,8 @@ import art.infinitescroll.control.UiState
 import art.infinitescroll.control.ble.LinkState
 import art.infinitescroll.protocol.Job
 import art.infinitescroll.protocol.LibraryItem
+import art.infinitescroll.protocol.WifiNetwork
+import art.infinitescroll.protocol.wifiBars
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
@@ -459,5 +469,97 @@ private fun PrinterScreen(state: UiState, vm: InstallationViewModel) {
                 }
             }
         }
+        item { WifiSection(state, vm) }
     }
+}
+
+// ---- Wi-Fi ----------------------------------------------------------------
+
+/** Signal as four bars (never a number). */
+@Composable
+private fun SignalBars(signal: Int) {
+    val bars = wifiBars(signal)
+    val on = MaterialTheme.colorScheme.primary
+    val off = MaterialTheme.colorScheme.outlineVariant
+    val label = when (bars) { 0 -> "No signal"; 1 -> "Weak signal"; 2 -> "Fair signal"; 3 -> "Good signal"; else -> "Excellent signal" }
+    Row(
+        Modifier.semantics { contentDescription = label },
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        for (i in 1..4) Box(Modifier.width(5.dp).height((4 + i * 4).dp).background(if (i <= bars) on else off))
+    }
+}
+
+@Composable
+private fun WifiSection(state: UiState, vm: InstallationViewModel) {
+    val wifi = state.wifi
+    var joining by remember { mutableStateOf<WifiNetwork?>(null) }
+    val connecting = wifi?.attempt?.state == "connecting"
+    Section("Wi-Fi") {
+        if (wifi == null) Text("Not available.") else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(if (wifi.connected) wifi.ssid.orEmpty() else "Not connected", style = MaterialTheme.typography.bodyLarge)
+                if (wifi.connected) SignalBars(wifi.signal)
+            }
+            if (connecting) {
+                Text("Connecting to ${wifi.attempt.ssid}…")
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (wifi.attempt.state == "failed") Text(wifi.attempt.error ?: "Could not connect.", color = MaterialTheme.colorScheme.error)
+        }
+        OutlinedButton(onClick = vm::scanWifi, enabled = !state.wifiScanning && !connecting) { Text(if (state.wifiScanning) "Scanning…" else "Find networks") }
+        state.wifiNetworks?.let { networks ->
+            if (networks.isEmpty()) Text("No networks found.")
+            networks.forEach { network ->
+                val usable = network.security != "enterprise"
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = usable && !network.inUse && !connecting) { joining = network }.padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(network.ssid + if (network.inUse) "  ✓" else "")
+                        if (!usable) Text("Not supported (needs a login)", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (network.security != "open") Text("🔒")
+                    SignalBars(network.signal)
+                }
+            }
+        }
+    }
+    joining?.let { network ->
+        WifiPasswordDialog(network, onDismiss = { joining = null }) { password -> vm.connectWifi(network.ssid, password); joining = null }
+    }
+}
+
+@Composable
+private fun WifiPasswordDialog(network: WifiNetwork, onDismiss: () -> Unit, onConnect: (String) -> Unit) {
+    var password by remember { mutableStateOf("") }
+    var show by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    val open = network.security == "open"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Join ${network.ssid}") },
+        text = {
+            if (open) Text("This network has no password.") else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { clipboard.getText()?.text?.let { password = it.trim() } }) { Text("Paste") }
+                    TextButton(onClick = { show = !show }) { Text(if (show) "Hide" else "Show") }
+                }
+                Text("If this network doesn't accept it, the Pi goes back to the one it is on now.", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConnect(password) }, enabled = open || password.length >= 8) { Text("Connect") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

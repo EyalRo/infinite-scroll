@@ -122,8 +122,8 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
             let items = library::list(&config.complete_dir);
             json_response(200, &serde_json::json!({"catalog": items}))
         }
-        (path, Method::Get) if path.starts_with("/catalog/") => {
-            let id = path.trim_start_matches("/catalog/");
+        (path, Method::Get) if single_catalog_id(path).is_some() => {
+            let id = single_catalog_id(path).expect("guard checked");
             match library::get_checked(&config.complete_dir, id) {
                 Some(item) => json_response(200, &serde_json::json!({"item": item})),
                 None => json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")})),
@@ -251,6 +251,28 @@ fn manual_print_response(config: &Config, id: &str) -> tiny_http::Response<std::
         json_response(200, &serde_json::json!({"success": true, "message": result.message}))
     } else {
         json_response(502, &serde_json::json!({"success": false, "error": result.message}))
+    }
+}
+
+/// The id in `/catalog/<id>` -- only for exactly that shape. Longer paths
+/// such as `/catalog/<id>/preview.png` belong to other routes and must not
+/// be claimed here.
+fn single_catalog_id(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/catalog/")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::single_catalog_id;
+
+    #[test]
+    fn single_catalog_id_matches_only_one_segment() {
+        assert_eq!(single_catalog_id("/catalog/abc"), Some("abc"));
+        assert_eq!(single_catalog_id("/catalog/abc/preview.png"), None);
+        assert_eq!(single_catalog_id("/catalog/abc/print"), None);
+        assert_eq!(single_catalog_id("/catalog/"), None);
+        assert_eq!(single_catalog_id("/catalog"), None);
     }
 }
 

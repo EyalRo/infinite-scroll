@@ -87,8 +87,9 @@ From a dev machine with the repo and Nix (see README "Deploying"):
 ./deploy/deploy.sh
 ```
 
-This cross-compiles for `aarch64-unknown-linux-gnu` and now includes
-`btcontrol`. **Likely failure point:** `btcontrol` depends on `bluer`, which
+This cross-compiles for `aarch64-unknown-linux-gnu`. `btcontrol` is built
+separately: if it fails, the other services still deploy and the script exits
+non-zero (the web-facing services are never blocked by it). **Likely failure point:** `btcontrol` depends on `bluer`, which
 needs libdbus; `libdbus-sys` is configured with the `vendored` feature so it
 builds from source with the cross C compiler. If this fails (missing `CC`,
 autotools, link errors), either fix the build or build natively on the Pi

@@ -27,6 +27,7 @@ import art.infinitescroll.protocol.Status
 import art.infinitescroll.protocol.Uploader
 import art.infinitescroll.protocol.WifiNetwork
 import art.infinitescroll.protocol.WifiStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job as CoroutineJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -95,7 +96,7 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
     private fun launchOp(label: String, block: suspend (InstallationApi) -> Unit) {
         val api = api ?: return notice(NoticeKind.ERROR, "Not connected")
         viewModelScope.launch {
-            try { block(api) } catch (e: Exception) { notice(NoticeKind.ERROR, "$label failed: ${describe(e)}") }
+            try { block(api) } catch (e: CancellationException) { throw e } catch (e: Exception) { notice(NoticeKind.ERROR, "$label failed: ${describe(e)}") }
         }
     }
 
@@ -109,6 +110,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
                 scanForInstallation(adapter).collect { device ->
                     _state.update { s -> if (s.devices.any { it.address == device.address }) s else s.copy(devices = s.devices + device) }
                 }
+            } catch (e: CancellationException) {
+                throw e   // a cancelled scan, refresh or fetch is not a failure
             } catch (e: Exception) {
                 notice(NoticeKind.ERROR, "Scan failed: ${describe(e)}")
             } finally {
@@ -133,6 +136,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
                 api = InstallationApi(client)
                 watchLink(link, client)
                 refreshAll()
+            } catch (e: CancellationException) {
+                throw e   // a cancelled scan, refresh or fetch is not a failure
             } catch (e: Exception) {
                 _state.update { it.copy(link = LinkState.DISCONNECTED) }
                 notice(NoticeKind.ERROR, "Could not connect: ${describe(e)}")
@@ -177,6 +182,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val s = api.wifiStatus()
             _state.update { it.copy(wifi = s) }
+        } catch (e: CancellationException) {
+            throw e   // a cancelled scan, refresh or fetch is not a failure
         } catch (e: Exception) {
             // Leave the previous value; the Wi-Fi section simply shows nothing new.
         }
@@ -187,6 +194,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val s = api.printerSettings()
             _state.update { it.copy(printerValues = s.values, printerSettingsError = s.error) }
+        } catch (e: CancellationException) {
+            throw e   // a cancelled scan, refresh or fetch is not a failure
         } catch (e: Exception) {
             _state.update { it.copy(printerValues = emptyMap(), printerSettingsError = describe(e)) }
         }
@@ -285,6 +294,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
                 val bytes = api.thumbnail(id)
                 val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() ?: return@launch
                 _state.update { it.copy(thumbnails = it.thumbnails + (id to bitmap)) }
+            } catch (e: CancellationException) {
+                throw e   // a cancelled scan, refresh or fetch is not a failure
             } catch (e: Exception) {
                 thumbnailsRequested.remove(id)
             }
@@ -301,6 +312,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
                 val networks = api.wifiScan()
                 _state.update { it.copy(wifiNetworks = networks) }
                 refreshWifi(api)
+            } catch (e: CancellationException) {
+                throw e   // a cancelled scan, refresh or fetch is not a failure
             } catch (e: Exception) {
                 notice(NoticeKind.ERROR, "Wi-Fi scan failed: ${describe(e)}")
             } finally {
@@ -346,6 +359,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
                 notice(NoticeKind.ACCEPTED, "Accepted: $name was handed to the Pi for processing. It will appear in the library shortly.")
                 // The watcher converts within seconds; look a few times.
                 api?.let { api -> repeat(5) { delay(2_000); runCatching { refreshLibrary(api) } } }
+            } catch (e: CancellationException) {
+                throw e   // a cancelled scan, refresh or fetch is not a failure
             } catch (e: Exception) {
                 notice(NoticeKind.ERROR, "Upload failed: ${describe(e)}")
             } finally {

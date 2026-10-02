@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +22,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +48,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import art.infinitescroll.control.InstallationViewModel
@@ -193,7 +198,6 @@ private fun StatusScreen(state: UiState, vm: InstallationViewModel) {
 @Composable
 private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> -> uris.forEach(vm::upload) }
-    var printing by remember { mutableStateOf<LibraryItem?>(null) }
     var deleting by remember { mutableStateOf<LibraryItem?>(null) }
     var confirmAll by remember { mutableStateOf(false) }
 
@@ -224,8 +228,15 @@ private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
                             Text(item.originalFilename, style = MaterialTheme.typography.bodyLarge)
                             Text("Printed ${item.printCount}× · added ${fmtTime(item.addedAt)}", style = MaterialTheme.typography.bodySmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(onClick = { printing = item }) { Text("Print…") }
-                                TextButton(onClick = { deleting = item }) { Text("Remove") }
+                                // One tap queues exactly one print; the Pi owns the job from there.
+                                FilledTonalIconButton(
+                                    onClick = { vm.print(item, 1) },
+                                    modifier = Modifier.semantics { contentDescription = "Print ${item.originalFilename}" },
+                                ) { Text("🖨️", fontSize = 20.sp) }
+                                FilledTonalIconButton(
+                                    onClick = { deleting = item },
+                                    modifier = Modifier.semantics { contentDescription = "Remove ${item.originalFilename}" },
+                                ) { Text("🗑️", fontSize = 20.sp) }
                             }
                         }
                     }
@@ -234,9 +245,6 @@ private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
         }
     }
 
-    printing?.let { item ->
-        CopiesDialog("Print ${item.originalFilename}", onDismiss = { printing = null }) { copies -> vm.print(item, copies); printing = null }
-    }
     if (confirmAll) {
         CopiesDialog("Print the entire library (${state.library.size} items), this many times each", onDismiss = { confirmAll = false }) { copies -> vm.printAll(copies); confirmAll = false }
     }
@@ -284,9 +292,30 @@ private fun JobCard(job: Job, onCancel: (() -> Unit)?) {
     }
 }
 
+/** The art-show button: the whole library, this many times each. */
+private const val SHOW_COPIES = 10
+
 @Composable
 private fun PrintingScreen(state: UiState, vm: InstallationViewModel) {
+    var confirm by remember { mutableStateOf(false) }
+    val items = state.library.size
+    val busy = state.jobs.any { it.active }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        item {
+            Button(
+                onClick = { confirm = true },
+                enabled = items > 0 && !busy,
+                modifier = Modifier.fillMaxWidth().height(120.dp).padding(vertical = 6.dp),
+            ) { Text("PRINT!", style = MaterialTheme.typography.displayMedium) }
+            Text(
+                when {
+                    items == 0 -> "The library is empty."
+                    busy -> "A print job is already running."
+                    else -> "Prints the entire library $SHOW_COPIES times ($items items, ${items * SHOW_COPIES} prints)."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         item {
             Section("Printer") {
                 val p = state.status?.printer
@@ -308,17 +337,35 @@ private fun PrintingScreen(state: UiState, vm: InstallationViewModel) {
             }
         }
     }
+
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("Print the whole library?") },
+            text = { Text("$items items \u00d7 $SHOW_COPIES = ${items * SHOW_COPIES} prints. The Pi will keep printing even if you disconnect.") },
+            confirmButton = { TextButton(onClick = { vm.printAll(SHOW_COPIES); confirm = false }) { Text("Print!") } },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+        )
+    }
 }
 
 // ---- schedule -----------------------------------------------------------
+
+private const val MIN_DELAY_MINUTES = 1f
+private const val MAX_DELAY_MINUTES = 60f
 
 @Composable
 private fun ScheduleScreen(state: UiState, vm: InstallationViewModel) {
     val schedule = state.schedule
     if (schedule == null) { Text("Loading…"); return }
-    var min by remember(schedule.minMinutes) { mutableStateOf(schedule.minMinutes.toString()) }
-    var max by remember(schedule.maxMinutes) { mutableStateOf(schedule.maxMinutes.toString()) }
+    var lo by remember(schedule.minMinutes) { mutableFloatStateOf(schedule.minMinutes.toFloat().coerceIn(MIN_DELAY_MINUTES, MAX_DELAY_MINUTES)) }
+    var hi by remember(schedule.maxMinutes) { mutableFloatStateOf(schedule.maxMinutes.toFloat().coerceIn(MIN_DELAY_MINUTES, MAX_DELAY_MINUTES)) }
     var ordering by remember(schedule.ordering) { mutableStateOf(schedule.ordering) }
+    var windowOn by remember(schedule.windowEnabled) { mutableStateOf(schedule.windowEnabled) }
+    var from by remember(schedule.windowStart) { mutableFloatStateOf(schedule.windowStart / 15f) }
+    var until by remember(schedule.windowEnd) { mutableFloatStateOf(schedule.windowEnd / 15f) }
+    val fromMinute = from.roundToInt() * 15
+    val untilMinute = until.roundToInt() * 15
 
     LazyColumn {
         item {
@@ -329,25 +376,7 @@ private fun ScheduleScreen(state: UiState, vm: InstallationViewModel) {
                 }
                 Line("Next print", if (schedule.enabled) fmtTime(schedule.nextPrintAt) else "—")
                 schedule.lastError?.let { Text("Last error: $it", color = MaterialTheme.colorScheme.error) }
-            }
-            Section("Timing") {
-                OutlinedTextField(min, { min = it }, label = { Text("Minimum minutes") }, singleLine = true)
-                OutlinedTextField(max, { max = it }, label = { Text("Maximum minutes") }, singleLine = true)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("sequential", "random").forEach { o -> FilterChip(selected = ordering == o, onClick = { ordering = o }, label = { Text(o) }) }
-                }
-                Button(onClick = {
-                    val lo = min.toDoubleOrNull(); val hi = max.toDoubleOrNull()
-                    if (lo != null && hi != null) vm.setSchedule(lo, hi, ordering)
-                }) { Text("Save timing") }
-                Text("Saving re-arms the timer. Maximum is 7 days (10080 minutes).", style = MaterialTheme.typography.bodySmall)
-            }
-            Section("Autoprint hours") {
-                var windowOn by remember(schedule.windowEnabled) { mutableStateOf(schedule.windowEnabled) }
-                var from by remember(schedule.windowStart) { mutableFloatStateOf(schedule.windowStart / 15f) }
-                var until by remember(schedule.windowEnd) { mutableFloatStateOf(schedule.windowEnd / 15f) }
-                val fromMinute = from.roundToInt() * 15
-                val untilMinute = until.roundToInt() * 15
+
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Only print during these hours")
                     Switch(checked = windowOn, onCheckedChange = { windowOn = it })
@@ -364,6 +393,28 @@ private fun ScheduleScreen(state: UiState, vm: InstallationViewModel) {
                         "a window like 22:00 to 02:00 runs overnight. Printing on demand ignores it.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+            Section("Randomness") {
+                Text("Wait between ${lo.roundToInt()} and ${hi.roundToInt()} minutes between prints")
+                Text("At least: ${lo.roundToInt()} min")
+                Slider(
+                    value = lo,
+                    onValueChange = { lo = it; if (hi < it) hi = it },
+                    valueRange = MIN_DELAY_MINUTES..MAX_DELAY_MINUTES,
+                    steps = (MAX_DELAY_MINUTES - MIN_DELAY_MINUTES).toInt() - 1,
+                )
+                Text("At most: ${hi.roundToInt()} min")
+                Slider(
+                    value = hi,
+                    onValueChange = { hi = it; if (lo > it) lo = it },
+                    valueRange = MIN_DELAY_MINUTES..MAX_DELAY_MINUTES,
+                    steps = (MAX_DELAY_MINUTES - MIN_DELAY_MINUTES).toInt() - 1,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("sequential", "random").forEach { o -> FilterChip(selected = ordering == o, onClick = { ordering = o }, label = { Text(o) }) }
+                }
+                Button(onClick = { vm.setSchedule(lo.roundToInt().toDouble(), hi.roundToInt().toDouble(), ordering) }) { Text("Save timing") }
+                Text("Saving re-arms the timer. Each wait is a random time between the two values.", style = MaterialTheme.typography.bodySmall)
             }
             Section("Preview — next picks") {
                 val preview = state.preview

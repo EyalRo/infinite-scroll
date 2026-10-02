@@ -51,7 +51,9 @@ bytes 1–2   message id, u16 little endian
 bytes 3…    payload slice (UTF-8 JSON, split anywhere)
 ```
 
-Payload per frame ≤ ATT MTU − 3 (ATT header) − 3 (frame header). A message
+Payload per frame ≤ min(ATT MTU − 3, 512) − 3 (frame header); the 512 cap is
+because Android drops characteristic values longer than 512 bytes regardless of
+the MTU, so a frame (and an upload chunk, header included) never exceeds it. A message
 that fits in one frame has FIRST|LAST. A FIRST frame restarts reassembly. The
 Pi sends the frames of one response contiguously. One request in flight at a
 time is the supported client behaviour.
@@ -126,7 +128,7 @@ skipped (`skipped`).
 
 1. `upload.begin {size, name}` → `upload_id`.
 2. Stream the file on the **Upload** characteristic. Each write:
-   `session u16 LE | offset u32 LE | data` (data ≤ MTU − 3 − 6). Offsets must
+   `session u16 LE | offset u32 LE | data` (data ≤ min(MTU − 3, 512) − 6). Offsets must
    be contiguous; chunks that overlap data already held are accepted, so a
    resend from any earlier offset is safe.
 3. Optionally `upload.status` to read `received` (and `error` if a chunk was

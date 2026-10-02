@@ -19,8 +19,10 @@ use tokio::sync::Mutex;
 use crate::handler::{Backend, Handler};
 use crate::protocol::*;
 
-/// ATT notification payload = MTU - 3 bytes of ATT header.
+/// ATT notification payload = MTU - 3 bytes of ATT header, but never more than
+/// MAX_ATTR_VALUE: Android drops characteristic values over 512 bytes.
 const ATT_OVERHEAD: usize = 3;
+const MAX_ATTR_VALUE: usize = 512;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 struct Shared<B: Backend> {
@@ -36,7 +38,8 @@ struct Shared<B: Backend> {
 
 impl<B: Backend + 'static> Shared<B> {
     fn chunk_payload(&self) -> usize {
-        (self.mtu.load(Ordering::Relaxed) as usize).saturating_sub(ATT_OVERHEAD + FRAME_HEADER_LEN).max(1)
+        let value = (self.mtu.load(Ordering::Relaxed) as usize).saturating_sub(ATT_OVERHEAD).min(MAX_ATTR_VALUE);
+        value.saturating_sub(FRAME_HEADER_LEN).max(1)
     }
 
     async fn send_response(&self, msg_id: u16, body: Vec<u8>) {

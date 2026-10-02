@@ -52,7 +52,7 @@ class RpcClient(private val transport: Transport, scope: CoroutineScope, private
     suspend fun call(op: String, args: JsonObject = JsonObject(emptyMap())): Reply = lock.withLock {
         val id = nextId
         nextId = if (nextId >= 0xFFFF) 1 else nextId + 1
-        val chunkPayload = transport.mtu - Wire.ATT_OVERHEAD - Frames.HEADER_LEN
+        val chunkPayload = Wire.maxValue(transport.mtu) - Frames.HEADER_LEN
         withTimeout(timeoutMs) {
             kotlinx.coroutines.coroutineScope {
                 // Subscribe before writing so a fast response is never missed.
@@ -86,7 +86,7 @@ class Uploader(private val rpc: RpcClient, private val maxRetries: Int = 3) {
         require(bytes.isNotEmpty()) { "empty file" }
         val begin = rpc.request("upload.begin", jsonArgs("name" to name, "size" to bytes.size)).result
         val session = (begin["upload_id"] as JsonPrimitive).content.toInt()
-        val chunkData = rpc.mtu - Wire.ATT_OVERHEAD - Wire.UPLOAD_HEADER_LEN
+        val chunkData = Wire.maxValue(rpc.mtu) - Wire.UPLOAD_HEADER_LEN
         require(chunkData > 0) { "MTU too small for uploads" }
 
         var from = 0

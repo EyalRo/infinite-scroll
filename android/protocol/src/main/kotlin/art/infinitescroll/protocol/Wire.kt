@@ -27,6 +27,12 @@ object Wire {
     const val UPLOAD_HEADER_LEN = 6
     const val ATT_OVERHEAD = 3
 
+    /** Android's GATT stack drops characteristic values over 512 bytes, whatever the MTU. */
+    const val MAX_ATTR_VALUE = 512
+
+    /** Largest characteristic value usable at this MTU. */
+    fun maxValue(mtu: Int): Int = minOf(mtu - ATT_OVERHEAD, MAX_ATTR_VALUE)
+
     val json = Json { ignoreUnknownKeys = true }
 
     fun crc32(bytes: ByteArray): Long = CRC32().apply { update(bytes) }.value

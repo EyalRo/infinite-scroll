@@ -1,136 +1,212 @@
 # Infinite Scroll
 
-Technical implementation for Half Cat Half Pizza's *Infinite Scroll*
-installation — a physical ribbon of uploaded artwork, printed on thermal
-paper. Full design context lives on the Ops-in-Net Knowledge page:
-https://ops.in.net/account/knowledge/infinite-scroll
+*Infinite Scroll* is a physical art installation by Half Cat Half Pizza: a
+ribbon of social-media-style posts printed on thermal paper. The ribbon keeps
+growing while the work is exhibited — every so often the installation prints
+another image from its library, lengthening the paper that hangs in the
+space.
 
-Installation hardware: Raspberry Pi 4 (`infinite-scroll.local`) wired over
-USB to an Arkscan 2054A direct-thermal printer. Validated print contract:
-650-dot canvas width, Floyd-Steinberg 1-bit dithering, raw ZPL `^GFA`
-bitmap, written directly to `/dev/usb/lp0` (no CUPS, no vendor driver).
+This repository is the software that runs it: a small, self-contained print
+system for a Raspberry Pi connected by USB to a thermal label printer, plus a
+web interface and an Android app for managing it.
 
-## Architecture
+The system's job is deliberately narrow: **pre-rendered images in, thermal
+paper out.** It does not generate or interpret posts. The artist supplies
+finished PNG or JPEG images; the software stores them, converts them for the
+printer, and prints them — on a random timer, on demand, or as a full batch.
 
-Three independent Rust services plus a static frontend, each with a single
-responsibility:
+## What it does
 
-- **`uploader`** (`crates/uploader`) — the only public write path. Accepts
-  PNG/JPG uploads over HTTP (no base64), sniffs the format, and stages them
-  through `partial/` → `ready/` via an atomic rename. No other
-  responsibilities.
-- **`watcher`** (`crates/watcher`) — has no HTTP API at all. Polls `ready/`,
-  converts each new image to the validated print contract (Floyd-Steinberg
-  dither, ZPL `^GFA` packing), and moves the result into `complete/` — the
-  print library. Runs autonomously; nothing calls it.
-- **`printer`** (`crates/printer`) — owns the library (list/remove) and the
-  autoprint scheduler, and does the actual physical print. Small footprint
-  and resilient by design, since after initial setup the installation goes
-  permanently offline. Also serves the static frontend directly (embedded
-  at compile time), so no separate webserver is needed on the Pi.
-- **`btcontrol`** (`crates/bluetooth`) — a BLE GATT server (BlueZ) that
-  is a second control surface for the offline, deployed installation: it
-  translates a small versioned protocol into calls to the `printer` and
-  `uploader` services (library, upload, print/queue/print-all, scheduler,
-  history/stats, clock sync). It owns no application state. Companion
-  Android app: `android/`. Protocol: `docs/ble-protocol.md`.
-- **Static frontend** (`web/library/`) — mobile-first library management UI
-  (upload, remove, scheduler preview) plus a non-physical preview that
-  simulates the scheduler's next picks. Served by `printer` and calls only
-  its own origin (uploads are proxied to `uploader` over loopback); no
-  dedicated backend of its own.
+- **Keeps a library of artwork.** Upload PNG or JPEG images (up to 20 MB);
+  each is converted once into a print-ready job and stored. Remove items at
+  any time.
+- **Prints on a timer.** An optional autoprint mode prints one image every
+  *N* to *M* minutes (configurable, up to 7 days). It can walk the library in
+  order, or shuffle it and print a full pass without repeats before
+  reshuffling. A preview shows what will print next.
+- **Prints on demand.** Print one item, several copies, or the whole library
+  in one go. Requests become durable jobs: they survive restarts and power
+  loss, can be cancelled, and keep running with no one connected.
+- **Records what happened.** Every print is logged with its result and an
+  estimate of the paper used, with lifetime statistics.
+- **Works offline.** After setup the installation needs no Wi-Fi or Internet.
+  A Bluetooth Low Energy interface and an Android app provide full control
+  from a phone standing next to the installation, including uploading new
+  artwork and setting the clock.
+- **Prints reliably.** Writes to the printer are serialized and time-bounded,
+  so a stuck or unplugged printer cannot hang the system, and print jobs
+  retry on transient device errors.
 
-The services are meant to be reachable on the public internet, gated by
-Cloudflare Access (human session + service token), matching the pattern
-already used for MediaWatch. Hostnames are flat
-(`infinite-scroll-*.virtualdino.com`) because the free wildcard certificate
-covers only one level. The browser UI needs only the library hostname;
-`upload` and `printer` are for machine callers:
+## How it works
 
-| Hostname | Service | Port |
-|---|---|---|
-| `infinite-scroll-upload.virtualdino.com` | uploader | 8081 |
-| `infinite-scroll-printer.virtualdino.com` | printer (API) | 8082 |
-| `infinite-scroll-library.virtualdino.com` | printer (static frontend) | 8082 |
-
-Shared conversion/dithering/ZPL/auth/HTTP-helper code lives in
-`crates/common`, used by all three binaries.
-
-## Layout
-
-- `crates/common/`, `crates/uploader/`, `crates/watcher/`, `crates/printer/`
-  — the four workspace crates described above.
-- `web/library/` — the static frontend (`index.html`, `style.css`,
-  `app.js`), also embedded directly into the `printer` binary at compile
-  time.
-- `docs/ble-protocol.md` — the BLE control protocol (the contract between
-  `btcontrol` and the Android app); `docs/printer-settings.md` — status of
-  printer-settings (density) verification, which is still pending hardware.
-- `android/` — the Android BLE controller app.
-- `docs/testing-handoff.md` — hardware/Android test plan for the Bluetooth
-  control feature (nothing in it has run on real hardware yet).
-- `deploy/` — systemd units for all services (including `btcontrol`) and `deploy.sh`, which
-  cross-compiles to `aarch64-unknown-linux-gnu` and deploys to
-  `infinite-scroll.local` over SSH.
-- `docs/cloudflare-tunnel-access-setup.md` — the manual Cloudflare Tunnel
-  ingress, DNS, and Access Application steps needed to expose the three
-  hostnames above (not automatable from a dev sandbox; requires access to
-  the Tunnel connector host and full Cloudflare API scope).
-- `docs/raspberry-pi-bringup.md` — SD imaging, cloud-init customization,
-  first-boot checks, EEPROM/OS upgrades, and recovery access. Hardware
-  bring-up only; unrelated to which application code runs on the Pi.
-- `docs/validated-printing.md` — the physically validated 650-dot raster,
-  ZPL encoding, and raw-USB transport contract that `crates/common`
-  implements, plus standalone manual print scripts for hardware debugging.
-- `scripts/print_job.sh`, `scripts/print_copies.sh`, `scripts/print_batch.sh`
-  — standalone manual fallback scripts that write a ZPL job straight to
-  `/dev/usb/lp0`, bypassing the Rust services entirely. Useful for hardware
-  troubleshooting independent of whether the services are healthy.
-- `docs/superpowers/plans/2026-09-17-rust-print-services.md` — the
-  implementation plan this codebase was built from.
-
-## Status
-
-- All three services (`uploader`, `watcher`, `printer`) are implemented,
-  tested, and deployed to `infinite-scroll.local` via systemd
-  (`deploy/*.service`, installed by `deploy/deploy.sh`).
-- Cloudflare Tunnel ingress, DNS, and Access Applications for the three
-  public hostnames: **not yet done** — see
-  `docs/cloudflare-tunnel-access-setup.md` for the required manual steps.
-  Until this is complete, the services are reachable only on the Pi's LAN
-  address, not the public hostnames above.
-- The `ops.in.net` MCP layer (`plugins/virtualdino`, `mcp`) still targets
-  the old Flask app's API contract and has not yet been updated to call
-  these services — blocked on the Cloudflare setup above, since it needs
-  the real hostnames and service-token credentials first.
-- Autoprint defaults to disabled (`printer/state.json`'s `enabled: false`)
-  until the installation is ready to go live.
-- JPEG EXIF orientation is applied before scaling, so phone photos print in
-  their intended portrait or landscape orientation.
-
-## Deploying
-
-```sh
-./deploy/deploy.sh
+```text
+            +--------------------+        +--------------------+
+            | Web UI (browser)   |        | Android app (BLE)  |
+            +---------+----------+        +---------+----------+
+                      | HTTP                        | Bluetooth LE
+                      v                             v
+   upload ->  +--------------+  loopback   +----------------+
+              |   printer    |<------------+    btcontrol   |
+              | library      |             +----------------+
+              | scheduler    |
+              | job queue    |    +------------+     +-----------+
+              | history      |    |  uploader  |---->|  watcher  |
+              +------+-------+    +------------+     +-----------+
+                     | raw ZPL          partial/ -> ready/ -> complete/
+                     v
+              thermal printer (/dev/usb/lp0)
 ```
 
-Cross-compiles the workspace to `aarch64-unknown-linux-gnu`, patches the
-resulting binaries' ELF interpreter to match the Pi's actual glibc (nixpkgs'
-cross-compiled glibc bakes in a Nix store path that doesn't exist on the
-Pi's Debian filesystem), copies them and the systemd units to
-`infinite-scroll.local`, restarts all three services, and runs health
-checks. Requires SSH access to `infinite-scroll.local` and pre-existing
-`/etc/infinite-scroll/{uploader,printer}.env` files on the Pi (see Step 5 of
-Task 10 in the implementation plan for how those were generated).
+Three independent Rust services, one Bluetooth service, and a shared library:
 
-## Manual print fallback
+| Component | Responsibility |
+|---|---|
+| `crates/uploader` | The only way new images enter. Accepts PNG/JPEG over HTTP, checks the real file format from its bytes, and stages it (`partial/` then an atomic move to `ready/`). |
+| `crates/watcher` | Has no API. Watches `ready/`, converts each image for the printer, and files it into the library (`complete/`), or `failed/` if it can't be converted. |
+| `crates/printer` | Owns the library, the autoprint scheduler, the print-job queue, print history, and all printer I/O. Also serves the web UI. |
+| `crates/bluetooth` (`btcontrol`) | A Bluetooth Low Energy (GATT) server that offers the same controls to a phone. It holds no state of its own — it forwards requests to `printer` and `uploader`. |
+| `crates/common` | Image conversion, dithering, ZPL encoding, and shared HTTP helpers. |
+| `web/library` | The static web interface, built into the `printer` binary. |
+| `android/` | The Android control app (Kotlin, Jetpack Compose). |
 
-For hardware troubleshooting independent of the Rust services, on the Pi:
+Bluetooth is a second control surface, not a second application: there is one
+library, one scheduler, one queue, and one place that talks to the printer.
+
+### From image to paper
+
+Images are converted into the format the printer needs:
+
+1. Decode the PNG/JPEG, apply JPEG orientation, and flatten transparency onto
+   white.
+2. Convert to grayscale and scale to **650 dots** wide (about 3.2 inches at
+   203 DPI), preserving aspect ratio. Height follows the image.
+3. Reduce to 1 bit with **Floyd–Steinberg dithering**.
+4. Pack into a ZPL `^GFA` bitmap and write it straight to the printer's USB
+   device (`/dev/usb/lp0`).
+
+There is no CUPS, driver, or desktop software in the loop. The details of the
+validated method are in [`docs/validated-printing.md`](docs/validated-printing.md).
+
+## Hardware
+
+- A **Raspberry Pi 4** running Raspberry Pi OS (64-bit). Its built-in
+  Bluetooth is used for the phone interface.
+- An **Arkscan 2054A** direct-thermal printer (203 DPI) connected over USB,
+  appearing as `/dev/usb/lp0` through the Linux `usblp` driver. Other
+  ZPL-capable printers with a raw USB device may work but are untested.
+- For the control app: an Android phone with Bluetooth LE (Android 13 or
+  later). It is developed against a recent Pixel.
+
+## Controlling it
+
+### Web interface
+
+The `printer` service serves a mobile-friendly page at its root (port 8082 by
+default) for browsing the library, uploading and removing artwork, printing an
+item immediately, configuring the print timer, and previewing upcoming prints.
+
+### Bluetooth and the Android app
+
+The Android app connects to the installation over Bluetooth LE and offers
+everything the web interface does, plus clock synchronisation (a Raspberry Pi
+has no battery-backed clock, so it needs the time after a power loss when
+offline). The app clearly distinguishes a command the installation has
+*accepted* — which it will carry out on its own, even if the phone
+disconnects — from one that has *completed*.
+
+The Bluetooth interface exposes only the specific operations the project
+defines. It has no shell, file, or raw printer access, and no pairing or
+login: physical proximity is the access boundary.
+
+The protocol is documented in [`docs/ble-protocol.md`](docs/ble-protocol.md);
+the app is described in [`android/README.md`](android/README.md).
+
+### Printer settings
+
+Settings such as print darkness are exposed only once they have been confirmed
+to work on the physical printer over this same raw-USB path. None are
+confirmed yet; see [`docs/printer-settings.md`](docs/printer-settings.md) for
+the procedure and status.
+
+## Building and testing
+
+You need a recent stable Rust toolchain.
 
 ```sh
-scripts/print_job.sh /var/lib/infinite-scroll/complete/<id>.zpl
+cargo build --release     # all services
+cargo test --workspace    # unit tests
+```
+
+`btcontrol` links against D-Bus (it talks to BlueZ); the build vendors
+libdbus, so a C compiler is the only extra requirement. The Android protocol
+library is plain Kotlin and tests anywhere:
+
+```sh
+cd android && ./gradlew :protocol:test
+```
+
+Building the Android app itself needs the Android SDK; see
+[`android/README.md`](android/README.md).
+
+## Running
+
+Each service is configured through environment variables and is meant to run
+under a process supervisor such as systemd. Example unit files are in
+[`deploy/`](deploy/).
+
+| Service | Required | Optional (default) |
+|---|---|---|
+| `uploader` | `UPLOADER_TOKEN`, `UPLOADER_PARTIAL_DIR`, `UPLOADER_READY_DIR` | `BIND_ADDR` (`127.0.0.1:8081`) |
+| `watcher` | `WATCHER_READY_DIR`, `WATCHER_COMPLETE_DIR`, `WATCHER_FAILED_DIR` | `WATCHER_POLL_SECONDS` (`3`) |
+| `printer` | `PRINTER_TOKEN`, `UPLOADER_TOKEN`, `PRINTER_STATE_PATH`, `PRINTER_COMPLETE_DIR`, `PRINTER_FAILED_DIR` | `PRINTER_DEVICE_PATH` (`/dev/usb/lp0`), `PRINTER_READY_DIR`, `UPLOADER_INTERNAL_ADDR` (`127.0.0.1:8081`), `BIND_ADDR` (`127.0.0.1:8082`) |
+| `btcontrol` | `PRINTER_TOKEN`, `UPLOADER_TOKEN` | `PRINTER_URL`, `UPLOADER_URL`, `BLE_LOCAL_NAME` (`Infinite Scroll`) |
+
+The token values are shared secrets between the services; generate your own
+and keep them out of version control. `btcontrol` needs BlueZ running and
+membership of the `bluetooth` group; it also uses the `CAP_SYS_TIME`
+capability so the phone can set the clock.
+
+**Security note.** The HTTP services are designed to sit on a trusted network
+or behind an authenticating reverse proxy, not directly on the open Internet:
+besides the bearer token, the `printer` and `uploader` APIs accept any request
+that carries a `Cf-Access-Jwt-Assertion` header, on the assumption that a
+proxy has already authenticated it. Do not expose their ports directly.
+
+[`deploy/deploy.sh`](deploy/deploy.sh) is the script used for the original
+installation: it cross-compiles for the Pi (using Nix) and installs the
+services over SSH. Treat it as a reference for your own setup.
+
+## Manual printing
+
+For hardware troubleshooting independent of the services, the scripts in
+[`scripts/`](scripts/) write a stored print job straight to the printer
+device:
+
+```sh
+scripts/print_job.sh    /var/lib/infinite-scroll/complete/<id>.zpl
 scripts/print_copies.sh /var/lib/infinite-scroll/complete/<id>.zpl 30
 ```
 
-See `docs/validated-printing.md` for the full raster/ZPL contract these
-scripts and `crates/common` both implement.
+## Repository layout
+
+```text
+crates/      Rust workspace: common, uploader, watcher, printer, bluetooth
+web/library  Static web interface (embedded in the printer binary)
+android/     Android control app and its pure-Kotlin protocol library
+deploy/      Example systemd units and a deployment script
+scripts/     Manual print and printer-probe helpers
+docs/        Protocol, validated print method, printer-settings notes
+```
+
+## Status
+
+The services are implemented and covered by unit tests, and the print path has
+been validated on the physical printer. The Bluetooth service and Android app
+are newer: their protocol layers are tested, but they have not yet been
+exercised end to end on real hardware, and the Android app has not yet been
+built against the Android SDK. Auto-print is off by default until you enable
+it.
+
+## License
+
+No license file has been added yet.

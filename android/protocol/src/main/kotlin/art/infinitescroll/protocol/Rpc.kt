@@ -134,6 +134,12 @@ class InstallationApi(val rpc: RpcClient) {
         return all
     }
 
+    /** A small JPEG (decode with BitmapFactory) for list views; far cheaper over BLE than a full preview. */
+    suspend fun thumbnail(id: String, width: Int = 160): ByteArray {
+        val thumbnail = decode(rpc.request("library.thumbnail", jsonArgs("id" to id, "width" to width)), Thumbnail.serializer())
+        return java.util.Base64.getDecoder().decode(thumbnail.data)
+    }
+
     suspend fun delete(id: String) { rpc.request("library.delete", jsonArgs("id" to id)) }
 
     /** Accepted, not finished: the returned job is owned by the Pi. */
@@ -151,15 +157,35 @@ class InstallationApi(val rpc: RpcClient) {
     suspend fun stats(): Stats = decode(rpc.request("stats.get"), Stats.serializer())
     suspend fun schedule(): Schedule = decode(rpc.request("sched.get"), Schedule.serializer())
 
-    suspend fun setSchedule(enabled: Boolean? = null, minMinutes: Double? = null, maxMinutes: Double? = null, ordering: String? = null): Schedule =
+    suspend fun setSchedule(
+        enabled: Boolean? = null,
+        minMinutes: Double? = null,
+        maxMinutes: Double? = null,
+        ordering: String? = null,
+        windowEnabled: Boolean? = null,
+        windowStart: Int? = null,
+        windowEnd: Int? = null,
+    ): Schedule =
         decode(
-            rpc.request("sched.set", jsonArgs("enabled" to enabled, "min_minutes" to minMinutes, "max_minutes" to maxMinutes, "ordering" to ordering)),
+            rpc.request(
+                "sched.set",
+                jsonArgs(
+                    "enabled" to enabled, "min_minutes" to minMinutes, "max_minutes" to maxMinutes, "ordering" to ordering,
+                    "window_enabled" to windowEnabled, "window_start" to windowStart, "window_end" to windowEnd,
+                ),
+            ),
             Schedule.serializer(),
         )
 
     suspend fun preview(count: Int = 3): Preview = decode(rpc.request("sched.preview", jsonArgs("count" to count)), Preview.serializer())
     suspend fun capabilities(): Capabilities = decode(rpc.request("printer.capabilities"), Capabilities.serializer())
     suspend fun setPrinterSetting(key: String, value: Long) { rpc.request("printer.settings.set", jsonArgs("key" to key, "value" to value)) }
+
+    /** Reads current values (e.g. darkness) back from the printer itself. */
+    suspend fun printerSettings(): PrinterSettings = decode(rpc.request("printer.settings.get"), PrinterSettings.serializer())
+
+    /** The printer prints its own settings label. */
+    suspend fun printConfig() { rpc.request("printer.print_config") }
 
     /** Sets the Pi clock from the phone's clock; returns the Pi's resulting time. */
     suspend fun syncClock(nowMs: Long = System.currentTimeMillis()): Long =

@@ -3,7 +3,10 @@ package art.infinitescroll.control
 import android.app.Application
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import art.infinitescroll.control.ble.GattTransport
@@ -45,6 +48,11 @@ data class UiState(
     val schedule: Schedule? = null,
     val preview: Preview? = null,
     val capabilities: Capabilities? = null,
+    /** Live values read from the printer (e.g. `darkness`); empty if it could not be reached. */
+    val printerValues: Map<String, Long> = emptyMap(),
+    val printerSettingsError: String? = null,
+    /** Library thumbnails by item id, fetched lazily as items scroll into view. */
+    val thumbnails: Map<String, ImageBitmap> = emptyMap(),
     val uploadProgress: Float? = null,
     val notice: Notice? = null,
 )
@@ -63,6 +71,7 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
     private var api: InstallationApi? = null
     private var scanJob: CoroutineJob? = null
     private var linkJobs = mutableListOf<CoroutineJob>()
+    private val thumbnailsRequested = mutableSetOf<String>()
 
     private fun notice(kind: NoticeKind, text: String) = _state.update { it.copy(notice = Notice(kind, text)) }
     fun dismissNotice() = _state.update { it.copy(notice = null) }
@@ -146,6 +155,7 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
         rpc?.close()
         transport?.disconnect()
         transport = null; rpc = null; api = null
+        thumbnailsRequested.clear()
         _state.update { it.copy(link = LinkState.DISCONNECTED) }
     }
 
@@ -155,6 +165,16 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun refreshStatus(api: InstallationApi) { val s = api.status(); _state.update { it.copy(status = s) } }
     private suspend fun refreshLibrary(api: InstallationApi) { val l = api.library(); _state.update { it.copy(library = l) } }
+    /** Never throws: a printer that is off must not abort the refresh of everything else. */
+    private suspend fun refreshPrinterSettings(api: InstallationApi) {
+        try {
+            val s = api.printerSettings()
+            _state.update { it.copy(printerValues = s.values, printerSettingsError = s.error) }
+        } catch (e: Exception) {
+            _state.update { it.copy(printerValues = emptyMap(), printerSettingsError = describe(e)) }
+        }
+    }
+
     private suspend fun refreshJobs(api: InstallationApi) { val j = api.jobs(); _state.update { it.copy(jobs = j) } }
     private suspend fun refreshSchedule(api: InstallationApi) {
         val s = api.schedule(); val p = api.preview(3)
@@ -165,10 +185,12 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
         refreshStatus(api); refreshLibrary(api); refreshJobs(api); refreshSchedule(api)
         val history = api.history(50); val stats = api.stats(); val caps = api.capabilities()
         _state.update { it.copy(history = history, stats = stats, capabilities = caps) }
+        refreshPrinterSettings(api)
     }
 
     fun refreshPrinting() = launchOp("Refresh") { api ->
         refreshJobs(api); refreshStatus(api)
+        refreshPrinterSettings(api)
         val history = api.history(50); val stats = api.stats()
         _state.update { it.copy(history = history, stats = stats) }
     }
@@ -218,7 +240,36 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setPrinterSetting(key: String, value: Long) = launchOp("Printer setting") { api ->
         api.setPrinterSetting(key, value)
+        refreshPrinterSettings(api)
         notice(NoticeKind.COMPLETED, "Printer setting applied")
+    }
+
+    /** The printer prints its own settings label (uses a little paper). */
+    fun printConfig() = launchOp("Print settings") { api ->
+        api.printConfig()
+        notice(NoticeKind.COMPLETED, "The printer is printing its settings label")
+    }
+
+    /** Sets the daily window autoprint may run in; times are minutes since midnight, Pi local time. */
+    fun setPrintWindow(enabled: Boolean, startMinute: Int, endMinute: Int) = launchOp("Autoprint hours") { api ->
+        api.setSchedule(windowEnabled = enabled, windowStart = startMinute, windowEnd = endMinute)
+        refreshSchedule(api)
+        notice(NoticeKind.COMPLETED, if (enabled) "Autoprint limited to the chosen hours" else "Autoprint may run at any hour")
+    }
+
+    /** Fetches one item's thumbnail once; failures are silent and retried the next time the item is shown. */
+    fun loadThumbnail(id: String) {
+        val api = api ?: return
+        if (id in _state.value.thumbnails || !thumbnailsRequested.add(id)) return
+        viewModelScope.launch {
+            try {
+                val bytes = api.thumbnail(id)
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() ?: return@launch
+                _state.update { it.copy(thumbnails = it.thumbnails + (id to bitmap)) }
+            } catch (e: Exception) {
+                thumbnailsRequested.remove(id)
+            }
+        }
     }
 
     fun upload(uri: Uri) {

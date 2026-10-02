@@ -88,6 +88,7 @@ service is down), `backend_error`, `upload_incomplete`, `unsupported`,
 | `sys.clock.set` | `unix_ms` (int, 2026–2100) | completed | `unix_ms`, `previous_unix_ms`, `scheduler_rescheduled` |
 | `library.list` | `offset`?, `limit`? (≤50, default 20) | completed | `total`, `offset`, `items[]`, `next_offset` |
 | `library.get` | `id` | completed | `item` |
+| `library.thumbnail` | `id`, `width`? (32–320, default 160) | completed | `id`, `format` (`jpeg`), `width`, `height`, `data` (base64). A small grayscale JPEG, ~5 KB, for list views; the full preview is ~90 KB |
 | `library.delete` | `id` | completed | `success`, `removed` |
 | `upload.begin` | `size`, `name`? | completed | `upload_id`, `size`, `received` |
 | `upload.status` | `upload_id` | completed | `received`, `size`, `error` |
@@ -99,18 +100,21 @@ service is down), `backend_error`, `upload_incomplete`, `unsupported`,
 | `print.cancel` | `job_id` | completed | `job` |
 | `print.history` | `limit`? (≤200) | completed | `recent[]` newest first |
 | `stats.get` | – | completed | see below |
-| `sched.get` | – | completed | `enabled`, `min_minutes`, `max_minutes`, `ordering`, `next_print_at`, `last_item_id`, `last_error` |
-| `sched.set` | `enabled`?, `min_minutes`?, `max_minutes`?, `ordering`? (`random`/`sequential`) | completed | new schedule |
+| `sched.get` | – | completed | `enabled`, `min_minutes`, `max_minutes`, `ordering`, `window_enabled`, `window_start`, `window_end`, `next_print_at`, `last_item_id`, `last_error` |
+| `sched.set` | `enabled`?, `min_minutes`?, `max_minutes`?, `ordering`? (`random`/`sequential`), `window_enabled`?, `window_start`?, `window_end`? (minutes since local midnight, 0–1439, not equal) | completed | new schedule |
 | `sched.preview` | `count`? (1–20) | completed | `ordering`, `exact`, `picks[]` |
 | `printer.capabilities` | – | completed | `schema`, `settings[]` |
 | `printer.settings.get` | – | completed | `schema`, `values{}` |
 | `printer.settings.set` | `key`, `value` (int) | completed | `success` |
+| `printer.print_config` | – | completed | `success`; the printer prints its own settings label |
 
 Times are Unix seconds (floats) except `clock`, which is milliseconds.
 `library.list` items: `id`, `original_filename`, `added_at`, `print_count`,
 `last_printed_at`. A job: `id`, `kind` (`item`/`all`), `items[]`, `copies`,
 `done`, `skipped`, `state` (`queued`/`running`/`done`/`failed`/`cancelled`),
 `created_at`, `finished_at`, `error`.
+
+Autoprint window: with `window_enabled` (default on, 10:00–16:00 Pi local time) a scheduled print only fires between `window_start` (inclusive) and `window_end` (exclusive); a window with `start > end` wraps midnight. A print that falls due outside the window waits for the next opening. Manual and queued prints ignore it.
 
 `sched.preview` for `sequential` is exact; for `random` (`exact:false`) it is
 one sample of what the scheduler may do — same as the web preview.
@@ -165,11 +169,20 @@ reported.
 
 Capability-based and versioned. `printer.capabilities` lists only settings
 confirmed against the physical Arkscan 2054A over the validated raw-USB
-path, each as `{key, label, min, max, step, readable, writable}`.
-**Version 1 of the Pi service advertises none**: nothing has yet been
-verified on hardware (see `docs/printer-settings.md`). `printer.settings.set`
-for any other key returns `unsupported`. A controller must render the
-settings UI from `printer.capabilities` and show nothing when it is empty.
+path, each as `{key, label, min, max, step, readable, writable}`, plus
+`actions[]` (`{key, label}`) for one-shot commands. Currently:
+
+- setting `darkness` (0–30, step 1): `printer.settings.get` reads the live value
+  back from the printer; `printer.settings.set` writes it, verifies it by
+  reading it back, and the Pi re-applies it with every job so a printer power
+  cycle cannot revert it. A failure to reach the printer is `error` in the
+  `printer.settings.get` result (with empty `values`), not a failed request.
+- action `print_config` (`printer.print_config`): the printer prints its own
+  settings label.
+
+`printer.settings.set` for any other key returns `unsupported`. A controller
+must render the settings UI from `printer.capabilities` and show nothing for
+what is not listed.
 
 ## Versioning
 

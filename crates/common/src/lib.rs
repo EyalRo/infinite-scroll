@@ -136,9 +136,65 @@ pub fn zpl_to_preview_png(zpl_text: &str) -> Result<Vec<u8>, String> {
     Ok(png_bytes)
 }
 
+
+/// Smallest and largest thumbnail width a client may ask for (pixels).
+pub const THUMBNAIL_MIN_WIDTH: u32 = 32;
+pub const THUMBNAIL_MAX_WIDTH: u32 = 320;
+
+/// A small grayscale JPEG of a stored ZPL job, for list views. The 1-bit
+/// print bitmap is box-averaged down, so halftone dots blend back into grays
+/// and the thumbnail looks like the finished print rather than a noisy
+/// aliased dither. Returns `(jpeg bytes, width, height)`.
+pub fn zpl_to_thumbnail_jpeg(zpl_text: &str, width: u32) -> Result<(Vec<u8>, u32, u32), String> {
+    let (bits, full_width, full_height) = zpl::unpack_from_zpl(zpl_text).map_err(|error| error.0)?;
+    let image = image::GrayImage::from_raw(full_width, full_height, bits).ok_or_else(|| "decoded bitmap size mismatch".to_string())?;
+    let width = width.clamp(THUMBNAIL_MIN_WIDTH, THUMBNAIL_MAX_WIDTH).min(full_width.max(1));
+    let height = ((full_height as f64) * (width as f64) / (full_width.max(1) as f64)).round().max(1.0) as u32;
+    let small = image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle);
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 70)
+        .encode(small.as_raw(), width, height, image::ExtendedColorType::L8)
+        .map_err(|error| format!("failed to encode thumbnail: {error}"))?;
+    Ok((jpeg, width, height))
+}
+
+/// Standard (RFC 4648) base64 with padding, for carrying binary in JSON.
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { ALPHABET[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ALPHABET[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        for (input, expected) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
+            assert_eq!(base64_encode(input.as_bytes()), expected);
+        }
+    }
+
+    #[test]
+    fn thumbnail_is_a_small_jpeg_with_the_requested_width() {
+        let (width, height) = (650u32, 400u32);
+        let bits: Vec<u8> = (0..width * height).map(|i| if (i / 8) % 2 == 0 { 0 } else { 255 }).collect();
+        let zpl = zpl::pack_to_zpl(&bits, width, height).text;
+        let (jpeg, w, h) = zpl_to_thumbnail_jpeg(&zpl, 160).unwrap();
+        assert_eq!((w, h), (160, 98));
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
+        assert!(jpeg.len() < 8_000, "thumbnail too large for BLE: {}", jpeg.len());
+        // Out-of-range widths are clamped rather than rejected.
+        assert_eq!(zpl_to_thumbnail_jpeg(&zpl, 5000).unwrap().1, THUMBNAIL_MAX_WIDTH);
+    }
 
     fn tiny_png_bytes(width: u32, height: u32) -> Vec<u8> {
         let image = image::RgbImage::from_pixel(width, height, image::Rgb([10, 10, 10]));

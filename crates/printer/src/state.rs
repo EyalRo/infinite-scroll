@@ -25,6 +25,29 @@ pub struct Settings {
     /// empty queue, which just starts a fresh shuffle on the next pick).
     #[serde(default)]
     pub shuffle_queue: Vec<String>,
+    /// Autoprint only fires inside this daily local-time window (minutes since
+    /// midnight, `[start, end)`; `start > end` wraps midnight). Defaults apply to
+    /// state files written before the window existed. Manual prints ignore it.
+    #[serde(default = "default_window_enabled")]
+    pub window_enabled: bool,
+    #[serde(default = "default_window_start")]
+    pub window_start: u32,
+    #[serde(default = "default_window_end")]
+    pub window_end: u32,
+    /// Print darkness (0-30) the user chose, re-applied with every job; `None`
+    /// leaves the printer at whatever it is set to.
+    #[serde(default)]
+    pub darkness: Option<u8>,
+}
+
+fn default_window_enabled() -> bool {
+    true
+}
+fn default_window_start() -> u32 {
+    crate::window::DEFAULT_START
+}
+fn default_window_end() -> u32 {
+    crate::window::DEFAULT_END
 }
 
 impl Default for Settings {
@@ -38,6 +61,10 @@ impl Default for Settings {
             last_item_id: None,
             last_error: None,
             shuffle_queue: Vec::new(),
+            window_enabled: default_window_enabled(),
+            window_start: default_window_start(),
+            window_end: default_window_end(),
+            darkness: None,
         }
     }
 }
@@ -85,6 +112,16 @@ mod tests {
         assert!(loaded.enabled);
         assert_eq!(loaded.ordering, Ordering::Random);
         assert_eq!(loaded.last_item_id, Some("abc".into()));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_defaults_the_window_to_ten_to_four_for_a_state_file_written_before_it_existed() {
+        let path = std::env::temp_dir().join(format!("printer-state-test-pre-window-{}.json", std::process::id()));
+        fs::write(&path, r#"{"enabled":true,"min_minutes":15.0,"max_minutes":20.0,"ordering":"random","next_print_at":null,"last_item_id":null,"last_error":null}"#).unwrap();
+        let loaded = load(&path);
+        assert!(loaded.window_enabled);
+        assert_eq!((loaded.window_start, loaded.window_end), (600, 960));
         let _ = fs::remove_file(&path);
     }
 

@@ -6,6 +6,7 @@ mod printer_settings;
 mod scheduler;
 mod state;
 mod upload_proxy;
+mod window;
 
 use std::env;
 use std::io::Read;
@@ -75,6 +76,8 @@ fn main() {
         std::fs::create_dir_all(parent).expect("failed to create state dir");
     }
 
+    printer_device::set_darkness(state::load(&config.state_path).darkness);
+
     let scheduler_config = Arc::clone(&config);
     std::thread::spawn(move || scheduler_loop(scheduler_config));
     let worker_config = Arc::clone(&config);
@@ -135,13 +138,11 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
         ("/stats", Method::Get) => stats_response(config),
         ("/printer/capabilities", Method::Get) => json_response(
             200,
-            &serde_json::json!({"schema": printer_settings::SCHEMA_VERSION, "settings": printer_settings::capabilities()}),
+            &serde_json::json!({"schema": printer_settings::SCHEMA_VERSION, "settings": printer_settings::capabilities(), "actions": printer_settings::actions()}),
         ),
-        ("/printer/settings", Method::Get) => json_response(
-            200,
-            &serde_json::json!({"schema": printer_settings::SCHEMA_VERSION, "values": {}}),
-        ),
-        ("/printer/settings", Method::Post) => set_printer_setting(request),
+        ("/printer/settings", Method::Get) => printer_settings_response(config),
+        ("/printer/settings", Method::Post) => set_printer_setting(config, request),
+        ("/printer/print-config", Method::Post) => print_config_response(config),
         ("/print", Method::Post) => enqueue_print(config, request, false),
         ("/print-all", Method::Post) => enqueue_print(config, request, true),
         (path, Method::Delete) if path.starts_with("/jobs/") => cancel_job(config, path.trim_start_matches("/jobs/")),
@@ -151,6 +152,10 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
                 Some(item) => json_response(200, &serde_json::json!({"success": true, "removed": item})),
                 None => json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")})),
             }
+        }
+        (path, Method::Get) if path.starts_with("/catalog/") && path.ends_with("/thumbnail") => {
+            let id = path.trim_start_matches("/catalog/").trim_end_matches("/thumbnail");
+            thumbnail_response(config, id, &query)
         }
         (path, Method::Get) if path.starts_with("/catalog/") && path.ends_with("/preview.png") => {
             let id = path.trim_start_matches("/catalog/").trim_end_matches("/preview.png");
@@ -185,6 +190,25 @@ fn upload_proxy_response(config: &Config, request: &mut tiny_http::Request) -> t
             tiny_http::Response::from_data(body).with_status_code(status).with_header(header)
         }
         Err(error) => json_response(502, &serde_json::json!({"error": format!("upload proxy failed: {error}")})),
+    }
+}
+
+/// A small JPEG of one catalog item, base64 in JSON, for the phone's library
+/// list (a full preview PNG is ~90 KB, too slow over Bluetooth).
+fn thumbnail_response(config: &Config, id: &str, query: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    if !library::is_valid_id(id) {
+        return json_response(404, &serde_json::json!({"error": "not found"}));
+    }
+    let Ok(zpl_text) = library::read_zpl(&config.complete_dir, id) else {
+        return json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")}));
+    };
+    let width = parse_query_u32(query, "w").unwrap_or(160);
+    match common::zpl_to_thumbnail_jpeg(&zpl_text, width) {
+        Ok((jpeg, width, height)) => json_response(
+            200,
+            &serde_json::json!({"id": id, "format": "jpeg", "width": width, "height": height, "data": common::base64_encode(&jpeg)}),
+        ),
+        Err(error) => json_response(500, &serde_json::json!({"error": format!("failed to render thumbnail: {error}")})),
     }
 }
 
@@ -319,6 +343,9 @@ fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u
                 "max_minutes": settings.max_minutes,
                 "ordering": settings.ordering,
                 "next_print_at": settings.next_print_at,
+                "window_enabled": settings.window_enabled,
+                "window_start": settings.window_start,
+                "window_end": settings.window_end,
                 "last_item_id": settings.last_item_id,
                 "last_error": settings.last_error,
             },
@@ -358,6 +385,23 @@ fn configure_autoprint(config: &Config, request: &mut tiny_http::Request) -> tin
             _ => return json_response(400, &serde_json::json!({"error": "ordering must be \"random\" or \"sequential\""})),
         };
     }
+    if let Some(value) = payload.get("window_enabled") {
+        let Some(flag) = value.as_bool() else {
+            return json_response(400, &serde_json::json!({"error": "window_enabled must be a boolean"}));
+        };
+        settings.window_enabled = flag;
+    }
+    for (key, slot) in [("window_start", &mut settings.window_start), ("window_end", &mut settings.window_end)] {
+        if let Some(value) = payload.get(key) {
+            let Some(minutes) = value.as_u64().filter(|m| *m < window::MINUTES_PER_DAY as u64) else {
+                return json_response(400, &serde_json::json!({"error": format!("{key} must be minutes since midnight (0-1439)")}));
+            };
+            *slot = minutes as u32;
+        }
+    }
+    if !(window::Window { start: settings.window_start, end: settings.window_end }).is_valid() {
+        return json_response(400, &serde_json::json!({"error": "window_start and window_end must differ; turn the window off to print at any hour"}));
+    }
     if settings.min_minutes <= 0.0 || settings.max_minutes < settings.min_minutes || settings.max_minutes > 10_080.0 {
         return json_response(400, &serde_json::json!({"error": "use a valid timer range up to 7 days"}));
     }
@@ -365,7 +409,7 @@ fn configure_autoprint(config: &Config, request: &mut tiny_http::Request) -> tin
     settings.enabled = enabled;
     settings.last_error = None;
     settings.next_print_at = if enabled {
-        Some(common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()))
+        Some(schedule_next(&settings))
     } else {
         None
     };
@@ -457,7 +501,39 @@ fn stats_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8
     )
 }
 
-fn set_printer_setting(request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+/// Current values read from the printer itself. A printer that is off or
+/// silent yields an empty `values` plus an `error`, not a failed request, so
+/// the rest of a settings screen can still load.
+fn printer_settings_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let mut values = serde_json::Map::new();
+    let mut error = None;
+    {
+        let _device = config.device_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match printer_settings::read_darkness(&config.device_path) {
+            Ok(darkness) => {
+                values.insert(printer_settings::DARKNESS.to_string(), darkness.into());
+            }
+            Err(printer_settings::SettingError::Device(message)) => error = Some(message),
+            Err(_) => {}
+        }
+    }
+    let mut body = serde_json::json!({"schema": printer_settings::SCHEMA_VERSION, "values": values});
+    if let Some(message) = error {
+        body["error"] = message.into();
+    }
+    json_response(200, &body)
+}
+
+fn print_config_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let _device = config.device_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match printer_settings::print_config(&config.device_path) {
+        Ok(()) => json_response(200, &serde_json::json!({"success": true})),
+        Err(printer_settings::SettingError::Device(message)) => json_response(502, &serde_json::json!({"error": message})),
+        Err(_) => json_response(501, &serde_json::json!({"error": "not supported"})),
+    }
+}
+
+fn set_printer_setting(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let payload = match read_json_body(request) {
         Ok(payload) => payload,
         Err(response) => return response,
@@ -465,14 +541,28 @@ fn set_printer_setting(request: &mut tiny_http::Request) -> tiny_http::Response<
     let (Some(key), Some(value)) = (payload.get("key").and_then(|v| v.as_str()), payload.get("value").and_then(|v| v.as_i64())) else {
         return json_response(400, &serde_json::json!({"error": "key must be a string and value an integer"}));
     };
-    match printer_settings::set(key, value) {
-        Ok(()) => json_response(200, &serde_json::json!({"success": true})),
+    let outcome = {
+        let _device = config.device_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        printer_settings::set(&config.device_path, key, value)
+    };
+    match outcome {
+        Ok(applied) => {
+            // Remember it so every later job re-applies it (see printer_device).
+            let _guard = config.state_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut settings = state::load(&config.state_path);
+            settings.darkness = Some(applied as u8);
+            if let Err(error) = state::save(&config.state_path, &settings) {
+                return json_response(500, &serde_json::json!({"error": format!("applied, but failed to save the setting: {error}")}));
+            }
+            json_response(200, &serde_json::json!({"success": true, "key": key, "value": applied}))
+        }
         Err(printer_settings::SettingError::Unsupported) => {
             json_response(501, &serde_json::json!({"error": format!("printer setting {key} is not supported")}))
         }
         Err(printer_settings::SettingError::OutOfRange { min, max }) => {
             json_response(400, &serde_json::json!({"error": format!("{key} must be between {min} and {max}")}))
         }
+        Err(printer_settings::SettingError::Device(message)) => json_response(502, &serde_json::json!({"error": message})),
     }
 }
 
@@ -661,6 +751,20 @@ fn job_worker_loop(config: Arc<Config>) {
     }
 }
 
+fn settings_window(settings: &state::Settings) -> Option<window::Window> {
+    settings.window_enabled.then_some(window::Window { start: settings.window_start, end: settings.window_end })
+}
+
+/// When the next autoprint should fire: a random delay from now, pushed on to
+/// the daily window's next opening if that moment falls outside it.
+fn schedule_next(settings: &state::Settings) -> f64 {
+    let candidate = common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng());
+    match settings_window(settings) {
+        Some(window) => window::next_allowed(candidate, window, window::local_utc_offset),
+        None => candidate,
+    }
+}
+
 /// Runs forever. Ticks once a second; each tick checks whether autoprint
 /// is enabled and whether `next_print_at` has passed, and if so selects
 /// and prints one item before scheduling the next delay. Reads state
@@ -692,7 +796,7 @@ fn scheduler_loop(config: Arc<Config>) {
         }
         let Some(next_print_at) = settings.next_print_at else {
             settings.next_print_at = Some(
-                common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+                schedule_next(&settings),
             );
             let _ = state::save(&config.state_path, &settings);
             continue;
@@ -700,13 +804,24 @@ fn scheduler_loop(config: Arc<Config>) {
         if common::now_unix_seconds() < next_print_at {
             continue;
         }
+        // Due, but outside today's window (the window was edited, or the Pi was off
+        // through it): wait for the window to open instead of printing.
+        if let Some(window) = settings_window(&settings) {
+            let now = common::now_unix_seconds();
+            let allowed = window::next_allowed(now, window, window::local_utc_offset);
+            if allowed > now {
+                settings.next_print_at = Some(allowed);
+                let _ = state::save(&config.state_path, &settings);
+                continue;
+            }
+        }
 
         let items = library::list(&config.complete_dir);
         let Some(chosen) =
             scheduler::choose_item(&items, settings.ordering, &settings.last_item_id, &mut settings.shuffle_queue, &mut rand::thread_rng()).cloned()
         else {
             settings.next_print_at = Some(
-                common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+                schedule_next(&settings),
             );
             let _ = state::save(&config.state_path, &settings);
             continue;
@@ -717,7 +832,7 @@ fn scheduler_loop(config: Arc<Config>) {
             Err(error) => {
                 settings.last_error = Some(format!("failed to read print job for {}: {error}", chosen.id));
                 settings.next_print_at = Some(
-                    common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+                    schedule_next(&settings),
                 );
                 let _ = state::save(&config.state_path, &settings);
                 continue;
@@ -751,7 +866,7 @@ fn scheduler_loop(config: Arc<Config>) {
             settings.last_error = Some(result.message);
         }
         settings.next_print_at = Some(
-            common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
+            schedule_next(&settings),
         );
         let _ = state::save(&config.state_path, &settings);
     }

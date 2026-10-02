@@ -107,6 +107,13 @@ private class FakePi(override val mtu: Int = 50, private val dropFirstUploadChun
                 }
             }
             "print.all" -> ok(id, "accepted", buildJsonObject { put("accepted", true); put("job", buildJsonObject { put("id", "j1"); put("kind", "all"); put("state", "queued") }) })
+            "library.thumbnail" -> ok(id, "completed", buildJsonObject {
+                put("id", args["id"]!!.jsonPrimitive.content); put("format", "jpeg"); put("width", args["width"]!!.jsonPrimitive.int); put("height", 2)
+                put("data", java.util.Base64.getEncoder().encodeToString(byteArrayOf(-1, -40, 1, 2, 3)))
+            })
+            "sched.set" -> ok(id, "completed", buildJsonObject { for ((k, v) in args) put(k, v) })
+            "printer.settings.get" -> ok(id, "completed", buildJsonObject { put("schema", 1); put("values", buildJsonObject { put("darkness", 10) }) })
+            "printer.print_config" -> ok(id, "completed", buildJsonObject { put("success", true) })
             else -> err(id, "unknown_op")
         }
         // The Pi chunks its notifications to the MTU, like the real service.
@@ -159,5 +166,61 @@ class RpcTest {
         Uploader(client(pi)).upload("a.png", data)
         assertContentEquals(data, pi.committed)
         assertTrue(pi.ops.count { it == "upload.status" } >= 2)
+    }
+}
+
+class LibraryPrinterAndScheduleTest {
+    private fun api(pi: FakePi) = InstallationApi(RpcClient(pi, CoroutineScope(Dispatchers.Default), timeoutMs = 5_000))
+
+    @Test fun thumbnailIsDecodedFromBase64AcrossMultipleFrames() = runBlocking {
+        val bytes = api(FakePi(mtu = 20)).thumbnail("abc", width = 96)
+        assertContentEquals(byteArrayOf(-1, -40, 1, 2, 3), bytes)
+    }
+
+    @Test fun framesNeverExceedTheAndroidCharacteristicLimit() {
+        assertEquals(512, Wire.maxValue(517))
+        assertEquals(47, Wire.maxValue(50))
+        for (frame in Frames.encode(1, ByteArray(5_000) { 1 }, Wire.maxValue(517) - Frames.HEADER_LEN)) assertTrue(frame.size <= 512)
+    }
+
+    @Test fun scheduleWindowIsSentAndParsed() = runBlocking {
+        val schedule = api(FakePi()).setSchedule(windowEnabled = true, windowStart = 600, windowEnd = 960)
+        assertTrue(schedule.windowEnabled)
+        assertEquals(600, schedule.windowStart)
+        assertEquals(960, schedule.windowEnd)
+    }
+
+    @Test fun scheduleWindowDefaultsToTenToFourWhenTheStatusPredatesIt() {
+        val schedule = Wire.json.decodeFromString(Schedule.serializer(), """{"enabled":true,"min_minutes":5.0,"max_minutes":10.0,"ordering":"random"}""")
+        assertTrue(schedule.windowEnabled)
+        assertEquals(10 * 60, schedule.windowStart)
+        assertEquals(16 * 60, schedule.windowEnd)
+    }
+
+    @Test fun printerSettingsReadBackTheLiveDarkness() = runBlocking {
+        val settings = api(FakePi()).printerSettings()
+        assertEquals(10L, settings.values["darkness"])
+        assertNull(settings.error)
+    }
+
+    @Test fun printerSettingsReportAnUnreachablePrinterWithoutFailing() {
+        val settings = Wire.json.decodeFromString(PrinterSettings.serializer(), """{"schema":1,"values":{},"error":"printer busy"}""")
+        assertTrue(settings.values.isEmpty())
+        assertEquals("printer busy", settings.error)
+    }
+
+    @Test fun capabilitiesListActions() {
+        val caps = Wire.json.decodeFromString(
+            Capabilities.serializer(),
+            """{"schema":1,"settings":[{"key":"darkness","label":"Print darkness","min":0,"max":30,"step":1,"readable":true,"writable":true}],"actions":[{"key":"print_config","label":"Print settings label"}]}""",
+        )
+        assertEquals("print_config", caps.actions.single().key)
+        assertEquals(30L, caps.settings.single().max)
+    }
+
+    @Test fun printConfigIsAccepted() = runBlocking {
+        val pi = FakePi()
+        api(pi).printConfig()
+        assertEquals(listOf("printer.print_config"), pi.ops)
     }
 }

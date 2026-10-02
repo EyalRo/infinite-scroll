@@ -17,7 +17,7 @@ Related: `docs/ble-protocol.md` (the contract), `docs/printer-settings.md`
 | `crates/bluetooth` → `btcontrol` BLE GATT server | Protocol/handler unit-tested (27 tests). Cross-compiled and deployed to the Pi (2026-10-02): advertises under BlueZ and a laptop can connect with no pairing prompt. **Never tested with the Android app.** |
 | `android/protocol` (Kotlin, pure JVM) | 11 unit tests pass. |
 | `android/app` (Compose UI + GATT client) | **Never compiled** (written without an Android SDK). Expect a first-build fix-up pass. |
-| Printer density/darkness | **Deliberately not implemented** — needs hardware verification (Part B). |
+| Printer density/darkness | Verified on hardware and exposed (`darkness`, plus a `print_config` action); see `docs/printer-settings.md`. |
 
 ## Ground rules
 

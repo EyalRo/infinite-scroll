@@ -155,6 +155,11 @@ impl<B: Backend> Handler<B> {
 
             "library.list" => self.library_list(args),
             "library.get" => self.printer_op("GET", &format!("/catalog/{}", check_id(arg_str(args, "id")?)?), None, Disposition::Completed),
+            "library.thumbnail" => {
+                let id = check_id(arg_str(args, "id")?)?;
+                let width = opt_u64(args, "width")?.unwrap_or(160);
+                self.printer_op("GET", &format!("/catalog/{id}/thumbnail?w={width}"), None, Disposition::Completed)
+            }
             "library.delete" => self.printer_op("DELETE", &format!("/catalog/{}", check_id(arg_str(args, "id")?)?), None, Disposition::Completed),
 
             "upload.begin" => self.upload_begin(args),
@@ -182,6 +187,7 @@ impl<B: Backend> Handler<B> {
 
             // Capability-based printer settings. Only settings the printer
             // service advertises (i.e. verified on hardware) can be used.
+            "printer.print_config" => self.printer_op("POST", "/printer/print-config", Some(&json!({})), Disposition::Completed),
             "printer.capabilities" => self.printer_op("GET", "/printer/capabilities", None, Disposition::Completed),
             "printer.settings.get" => self.printer_op("GET", "/printer/settings", None, Disposition::Completed),
             "printer.settings.set" => {
@@ -302,7 +308,7 @@ impl<B: Backend> Handler<B> {
         // `enabled` is required by the printer API; fill it from current
         // state so a phone can change just the schedule.
         let mut body = json!({});
-        for key in ["min_minutes", "max_minutes", "ordering"] {
+        for key in ["min_minutes", "max_minutes", "ordering", "window_enabled", "window_start", "window_end"] {
             if let Some(value) = args.get(key) {
                 body[key] = value.clone();
             }
@@ -502,7 +508,10 @@ mod tests {
             match (method, path) {
                 ("GET", "/status") => Ok((200, json!({"printer": {"connected": true, "busy": false}, "autoprint": {"enabled": self.autoprint_enabled, "ordering": "sequential"}, "jobs": {"active": 0, "current": null}}))),
                 ("GET", "/catalog") => Ok((200, json!({"catalog": (0..5).map(|i| json!({"id": format!("id-{i}")})).collect::<Vec<_>>()}))),
+                ("POST", "/printer/print-config") => Ok((200, json!({"success": true}))),
                 ("POST", "/print") => Ok((202, json!({"accepted": true, "job": {"id": "job-1", "state": "queued"}}))),
+                ("GET", "/catalog/id-0/thumbnail?w=160") => Ok((200, json!({"id": "id-0", "format": "jpeg", "width": 160, "height": 90, "data": "AAAA"}))),
+                ("GET", "/catalog/id-0/thumbnail?w=96") => Ok((200, json!({"id": "id-0", "format": "jpeg", "width": 96, "height": 54, "data": "AAAA"}))),
                 ("DELETE", "/catalog/id-0") => Ok((200, json!({"success": true}))),
                 ("DELETE", "/catalog/missing") => Ok((404, json!({"error": "no catalog item with id missing"}))),
                 ("POST", "/autoprint") => Ok((200, json!({"success": true, "autoprint": {"enabled": true}}))),
@@ -568,6 +577,24 @@ mod tests {
             assert_eq!(response["error"]["code"], "invalid_argument", "id {bad:?}");
         }
         assert!(h.backend.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn print_config_is_forwarded_to_the_printer() {
+        let response = call(&handler(), "printer.print_config", json!({}));
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["disposition"], "completed");
+    }
+
+    #[test]
+    fn library_thumbnail_forwards_id_and_width() {
+        let default = call(&handler(), "library.thumbnail", json!({"id": "id-0"}));
+        assert_eq!(default["ok"], true);
+        assert_eq!(default["result"]["width"], 160);
+        let narrow = call(&handler(), "library.thumbnail", json!({"id": "id-0", "width": 96}));
+        assert_eq!(narrow["result"]["width"], 96);
+        let bad = call(&handler(), "library.thumbnail", json!({"id": "../x"}));
+        assert_eq!(bad["ok"], false);
     }
 
     #[test]

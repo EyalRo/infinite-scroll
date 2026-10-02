@@ -52,6 +52,10 @@ data class Schedule(
     @SerialName("next_print_at") val nextPrintAt: Double? = null,
     @SerialName("last_item_id") val lastItemId: String? = null,
     @SerialName("last_error") val lastError: String? = null,
+    /** Autoprint runs only inside this daily window, in Pi local time (minutes since midnight; `[start, end)`, wraps midnight if start > end). */
+    @SerialName("window_enabled") val windowEnabled: Boolean = true,
+    @SerialName("window_start") val windowStart: Int = 600,
+    @SerialName("window_end") val windowEnd: Int = 960,
 )
 
 @Serializable
@@ -128,8 +132,20 @@ data class Capability(
     val writable: Boolean = false,
 )
 
+/** A one-shot command the printer offers, e.g. printing its own settings label. */
 @Serializable
-data class Capabilities(val schema: Int = 1, val settings: List<Capability> = emptyList())
+data class PrinterAction(val key: String, val label: String)
+
+@Serializable
+data class Capabilities(val schema: Int = 1, val settings: List<Capability> = emptyList(), val actions: List<PrinterAction> = emptyList())
+
+/** Live values read from the printer; `error` is set (with empty `values`) when it could not be reached. */
+@Serializable
+data class PrinterSettings(val schema: Int = 1, val values: Map<String, Long> = emptyMap(), val error: String? = null)
+
+/** A small JPEG of one library item, base64 in `data`. */
+@Serializable
+data class Thumbnail(val id: String, val format: String = "jpeg", val width: Int = 0, val height: Int = 0, val data: String)
 
 @Serializable
 data class UploadAck(@SerialName("item_id") val itemId: String? = null, val filename: String? = null, val name: String = "")

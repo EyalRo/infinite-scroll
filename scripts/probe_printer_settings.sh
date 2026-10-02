@@ -12,13 +12,13 @@ query() {
   local label="$1" command="$2"
   echo "== $label ($command)"
   # Open for read first so the reply is not lost, send, wait, dump.
-  exec 3<"$DEV"
-  printf '%s' "$command" > "$DEV"
+  exec 3<>"$DEV"  # one read/write open: usblp allows a single opener
+  printf "%s" "$command" >&3
   timeout 3 cat <&3 | od -c | head -20 || true
   exec 3<&-
 }
 
 query "host status"          "~HS"
 query "extended status"      "~HQES"
-query "printer config"       "^XA^HH^XZ"
+query "printer config (^HH, replies, does not print)" "^XA^HH^XZ"
 echo "No reply to a query means that query is not readable on this unit."

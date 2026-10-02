@@ -5,7 +5,11 @@ import android.bluetooth.BluetoothDevice
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,7 +45,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import art.infinitescroll.control.InstallationViewModel
 import art.infinitescroll.control.NoticeKind
 import art.infinitescroll.control.UiState
@@ -51,6 +57,8 @@ import art.infinitescroll.protocol.LibraryItem
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
+
+private fun fmtMinutes(minutes: Int): String = "%02d:%02d".format(minutes / 60, minutes % 60)
 
 private fun fmtTime(unixSeconds: Double?): String =
     if (unixSeconds == null) "—" else DateFormat.getDateTimeInstance().format(Date((unixSeconds * 1000).toLong()))
@@ -198,13 +206,27 @@ private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
         Text("${state.library.size} item(s). PNG or JPEG, up to 20 MB.", style = MaterialTheme.typography.bodySmall)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(state.library, key = { it.id }) { item ->
+                LaunchedEffect(item.id) { vm.loadThumbnail(item.id) }
                 Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(item.originalFilename, style = MaterialTheme.typography.bodyLarge)
-                        Text("Printed ${item.printCount}× · added ${fmtTime(item.addedAt)}", style = MaterialTheme.typography.bodySmall)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { printing = item }) { Text("Print…") }
-                            TextButton(onClick = { deleting = item }) { Text("Remove") }
+                    Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val thumbnail = state.thumbnails[item.id]
+                        if (thumbnail != null) {
+                            Image(
+                                bitmap = thumbnail,
+                                contentDescription = "Preview of ${item.originalFilename}",
+                                modifier = Modifier.width(72.dp).aspectRatio(thumbnail.width.toFloat() / thumbnail.height.toFloat()),
+                                contentScale = ContentScale.Fit,
+                            )
+                        } else {
+                            Box(Modifier.width(72.dp).aspectRatio(0.67f)) {} // keeps rows from jumping while it loads
+                        }
+                        Column {
+                            Text(item.originalFilename, style = MaterialTheme.typography.bodyLarge)
+                            Text("Printed ${item.printCount}× · added ${fmtTime(item.addedAt)}", style = MaterialTheme.typography.bodySmall)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { printing = item }) { Text("Print…") }
+                                TextButton(onClick = { deleting = item }) { Text("Remove") }
+                            }
                         }
                     }
                 }
@@ -320,6 +342,29 @@ private fun ScheduleScreen(state: UiState, vm: InstallationViewModel) {
                 }) { Text("Save timing") }
                 Text("Saving re-arms the timer. Maximum is 7 days (10080 minutes).", style = MaterialTheme.typography.bodySmall)
             }
+            Section("Autoprint hours") {
+                var windowOn by remember(schedule.windowEnabled) { mutableStateOf(schedule.windowEnabled) }
+                var from by remember(schedule.windowStart) { mutableFloatStateOf(schedule.windowStart / 15f) }
+                var until by remember(schedule.windowEnd) { mutableFloatStateOf(schedule.windowEnd / 15f) }
+                val fromMinute = from.roundToInt() * 15
+                val untilMinute = until.roundToInt() * 15
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Only print during these hours")
+                    Switch(checked = windowOn, onCheckedChange = { windowOn = it })
+                }
+                if (windowOn) {
+                    Text("From ${fmtMinutes(fromMinute)}")
+                    Slider(value = from, onValueChange = { from = it }, valueRange = 0f..95f, steps = 94)
+                    Text("Until ${fmtMinutes(untilMinute)}")
+                    Slider(value = until, onValueChange = { until = it }, valueRange = 0f..95f, steps = 94)
+                }
+                Button(onClick = { vm.setPrintWindow(windowOn, fromMinute, untilMinute) }, enabled = !windowOn || fromMinute != untilMinute) { Text("Save hours") }
+                Text(
+                    "Pi local time. A print that falls due outside these hours waits for the window to open; " +
+                        "a window like 22:00 to 02:00 runs overnight. Printing on demand ignores it.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Section("Preview — next picks") {
                 val preview = state.preview
                 if (preview == null || preview.picks.isEmpty()) Text("The library is empty — nothing to preview.") else {
@@ -347,12 +392,19 @@ private fun PrinterScreen(state: UiState, vm: InstallationViewModel) {
             val settings = state.capabilities?.settings.orEmpty().filter { it.writable }
             Section("Print settings") {
                 if (settings.isEmpty()) Text("No adjustable printer settings have been verified on this printer yet.")
+                state.printerSettingsError?.let { Text("Could not read the printer: $it", color = MaterialTheme.colorScheme.error) }
                 settings.forEach { cap ->
-                    var value by remember(cap.key) { mutableFloatStateOf(cap.min.toFloat()) }
-                    Text("${cap.label}: ${value.toLong()}")
+                    val current = state.printerValues[cap.key]
+                    var value by remember(cap.key, current) { mutableFloatStateOf((current ?: cap.min).toFloat()) }
+                    Text("${cap.label}: ${value.toLong()}" + (current?.let { " (printer is at $it)" } ?: ""))
                     val steps = ((cap.max - cap.min) / cap.step - 1).toInt().coerceAtLeast(0)
                     Slider(value = value, onValueChange = { value = it }, valueRange = cap.min.toFloat()..cap.max.toFloat(), steps = steps)
-                    Button(onClick = { vm.setPrinterSetting(cap.key, value.toLong()) }) { Text("Apply") }
+                    if (cap.key == "darkness") Text("Higher is darker: 0 is the lightest print, 30 the darkest.", style = MaterialTheme.typography.bodySmall)
+                    Button(onClick = { vm.setPrinterSetting(cap.key, value.toLong()) }, enabled = current != value.toLong()) { Text("Apply") }
+                }
+                state.capabilities?.actions.orEmpty().firstOrNull { it.key == "print_config" }?.let { action ->
+                    OutlinedButton(onClick = vm::printConfig) { Text(action.label) }
+                    Text("The printer prints its own configuration label.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }

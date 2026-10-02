@@ -14,7 +14,7 @@ Related: `docs/ble-protocol.md` (the contract), `docs/printer-settings.md`
 | Component | State |
 |---|---|
 | `crates/printer`: persistent job queue (`/print`, `/print-all`, `/jobs`), print history/stats (`/history`, `/stats`), scheduler preview (`/preview`), capability-gated printer settings (`/printer/*`) | Unit-tested; smoke-tested against a fake device (`/dev/null`). **Never run against the real Arkscan.** |
-| `crates/bluetooth` → `btcontrol` BLE GATT server | Protocol/handler unit-tested (27 tests). **Never run against BlueZ or a phone. Not yet cross-compiled/deployed.** |
+| `crates/bluetooth` → `btcontrol` BLE GATT server | Protocol/handler unit-tested (27 tests). Cross-compiled and deployed to the Pi (2026-10-02): advertises under BlueZ and a laptop can connect with no pairing prompt. **Never tested with the Android app.** |
 | `android/protocol` (Kotlin, pure JVM) | 11 unit tests pass. |
 | `android/app` (Compose UI + GATT client) | **Never compiled** (written without an Android SDK). Expect a first-build fix-up pass. |
 | Printer density/darkness | **Deliberately not implemented** — needs hardware verification (Part B). |

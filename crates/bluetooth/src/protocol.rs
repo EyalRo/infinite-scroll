@@ -203,6 +203,13 @@ mod tests {
         assert_eq!(r.push(&frames[0]).unwrap(), Some((7, b"hello".to_vec())));
     }
 
+    /// Mirrored byte-for-byte in android/protocol/.../ProtocolTest.kt.
+    #[test]
+    fn wire_vectors_shared_with_the_android_client() {
+        assert_eq!(encode_frames(7, b"hello", 100)[0], vec![0x03, 0x07, 0x00, b'h', b'e', b'l', b'l', b'o']);
+        assert_eq!(crc32fast::hash(b"123456789"), 0xCBF4_3926);
+    }
+
     #[test]
     fn multi_frame_round_trip_with_odd_chunking() {
         let body: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();

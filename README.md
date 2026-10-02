@@ -63,6 +63,8 @@ Shared conversion/dithering/ZPL/auth/HTTP-helper code lives in
   `btcontrol` and the Android app); `docs/printer-settings.md` — status of
   printer-settings (density) verification, which is still pending hardware.
 - `android/` — the Android BLE controller app.
+- `docs/testing-handoff.md` — hardware/Android test plan for the Bluetooth
+  control feature (nothing in it has run on real hardware yet).
 - `deploy/` — systemd units for all services (including `btcontrol`) and `deploy.sh`, which
   cross-compiles to `aarch64-unknown-linux-gnu` and deploys to
   `infinite-scroll.local` over SSH.
@@ -99,9 +101,8 @@ Shared conversion/dithering/ZPL/auth/HTTP-helper code lives in
   the real hostnames and service-token credentials first.
 - Autoprint defaults to disabled (`printer/state.json`'s `enabled: false`)
   until the installation is ready to go live.
-- No EXIF auto-rotation in v1 — a deliberate simplification versus the old
-  Python pipeline. A phone photo taken in portrait may print rotated; this
-  is a known follow-up, not a silent gap.
+- JPEG EXIF orientation is applied before scaling, so phone photos print in
+  their intended portrait or landscape orientation.
 
 ## Deploying
 

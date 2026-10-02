@@ -39,7 +39,19 @@ body {
   border: 1px solid rgba(0,0,0,0.15);
   border-radius: 4px;
 }
-#catalog-list button { color: var(--accent); background: none; border: none; cursor: pointer; }
+.catalog-actions { display: flex; align-items: center; gap: 0.75rem; }
+#catalog-list .print-button { padding: 0.3rem 0.7rem; }
+#catalog-list .remove-button { color: var(--accent); background: none; border: none; cursor: pointer; }
+
+.layer-timer form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.layer-timer label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
+.layer-timer input[type="number"] { width: 5rem; }
+.layer-timer button { padding: 0.5rem 1rem; margin-top: 0.25rem; }
 
 /* The "squiggly paper" preview: a vertical strip with a wavy clip-path on
    each edge, evoking a curl of thermal receipt paper. */
@@ -63,6 +75,11 @@ body {
   padding-top: 0.5rem;
 }
 .paper-strip .loop:first-child { border-top: none; padding-top: 0; }
+.paper-strip .loop img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
 
 @media (min-width: 700px) {
   body { padding: 2rem; max-width: 700px; margin: 0 auto; }

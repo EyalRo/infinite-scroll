@@ -3,10 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="uploader-origin" content="https://upload.infinite-scroll.art.virtualdino.com">
-<meta name="printer-origin" content="https://printer.infinite-scroll.art.virtualdino.com">
 <title>Infinite Scroll — Library</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=20260918c">
 </head>
 <body>
   <header class="layer layer-header">
@@ -23,12 +21,23 @@
     <ul id="catalog-list"></ul>
   </main>
 
+  <section class="layer layer-timer">
+    <h2>Print Timer</h2>
+    <form id="timer-form">
+      <label><input type="checkbox" id="timer-enabled"> Autoprint enabled</label>
+      <label>Min minutes between prints <input type="number" id="timer-min" min="0.1" step="0.1" required></label>
+      <label>Max minutes between prints <input type="number" id="timer-max" min="0.1" step="0.1" required></label>
+      <button type="submit">Save</button>
+    </form>
+    <p id="timer-status" role="status"></p>
+  </section>
+
   <section class="layer layer-preview">
     <h2>Preview</h2>
-    <p>A non-physical simulation of the next 3 scheduler picks. Nothing here is printed.</p>
+    <p>A non-physical simulation of 3 loops through the library. Nothing here is printed.</p>
     <div id="paper-strip" class="paper-strip"></div>
   </section>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20260918c"></script>
 </body>
 </html>

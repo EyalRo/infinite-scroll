@@ -153,7 +153,7 @@ connect and after their own commands.
 ### Statistics (`stats.get`)
 
 `library_items`, `failed_conversions`, `prints_ok`, `prints_failed`,
-`scheduled_ok`, `job_ok`, `paper_mm` (estimated from each job's `^LL` at 203
+`scheduled_ok`, `job_ok`, `manual_ok` (web "print now"), `paper_mm` (estimated from each job's `^LL` at 203
 DPI), `counters_since`, `item_print_total`. Counters start when this
 version first ran; earlier prints are not backfilled. The previous app's
 "immediate vs backlog" split does not exist in the Rust services and is not

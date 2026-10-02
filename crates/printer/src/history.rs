@@ -21,6 +21,8 @@ pub enum Origin {
     Scheduled,
     /// Came from an accepted print job (single item or print-all).
     Job,
+    /// A direct "print now" from the web UI (`POST /catalog/<id>/print`).
+    Manual,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +45,8 @@ pub struct Counters {
     pub prints_failed: u64,
     pub scheduled_ok: u64,
     pub job_ok: u64,
+    #[serde(default)]
+    pub manual_ok: u64,
     pub paper_mm: f64,
 }
 
@@ -67,6 +71,7 @@ impl History {
             match record.origin {
                 Origin::Scheduled => self.counters.scheduled_ok += 1,
                 Origin::Job => self.counters.job_ok += 1,
+                Origin::Manual => self.counters.manual_ok += 1,
             }
         } else {
             self.counters.prints_failed += 1;

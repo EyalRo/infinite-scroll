@@ -60,6 +60,9 @@ mod tests {
         let out = floyd_steinberg_1bit(&gray, 20, 20);
         let black = out.iter().filter(|&&p| p == 0).count();
         let white = out.iter().filter(|&&p| p == 255).count();
-        assert!(black > 50 && white > 50, "expected a dithered mix, got {black} black / {white} white");
+        assert!(
+            black > 50 && white > 50,
+            "expected a dithered mix, got {black} black / {white} white"
+        );
     }
 }

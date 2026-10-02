@@ -9,13 +9,38 @@ android {
     // Pixel on Android 17 is the target device; raise compileSdk/targetSdk to
     // the installed API 37 platform when building against it.
     compileSdk = 36
+    buildToolsVersion = "36.0.0" // Nix SDK provides only 36.0.0; AGP's default (35.0.0) would try to auto-install into the read-only store
 
     defaultConfig {
         applicationId = "art.infinitescroll.control"
         minSdk = 33 // typed GATT write/read callbacks, BLUETOOTH_SCAN/CONNECT permissions
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 4
+        versionName = "0.1.3"
+    }
+
+    // Release signing. Credentials come from environment variables (see
+    // docs/android-build-nix.md), so nothing secret lives in the repo and
+    // debug builds work without them. IS_KEYSTORE is a JKS/PKCS12 whose key
+    // and store passwords are equal (keytool's PKCS12 limitation).
+    signingConfigs {
+        create("release") {
+            System.getenv("IS_KEYSTORE")?.let { path ->
+                storeFile = file(path)
+                storePassword = System.getenv("IS_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("IS_KEY_ALIAS") ?: "release"
+                keyPassword = System.getenv("IS_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true      // R8 shrinks and obfuscates
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     buildFeatures { compose = true }

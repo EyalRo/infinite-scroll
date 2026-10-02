@@ -495,11 +495,8 @@ impl<B: Backend + 'static> Handler<B> {
 
 const NM_QUICK: Duration = Duration::from_secs(15);
 const NM_CONNECT: Duration = Duration::from_secs(45);
-/// How long a rescan is given before the list is read.
-#[cfg(not(test))]
-const WIFI_RESCAN_WAIT: Duration = Duration::from_secs(3);
-#[cfg(test)]
-const WIFI_RESCAN_WAIT: Duration = Duration::ZERO;
+/// A scan that waits for fresh results normally takes about 4 s.
+const WIFI_SCAN_WAIT: Duration = Duration::from_secs(12); // under the app's 15 s request timeout
 
 #[derive(Clone, Default)]
 pub struct WifiAttempt {
@@ -521,15 +518,23 @@ fn nm_unavailable(error: String) -> OpError {
 
 impl<B: Backend + 'static> Handler<B> {
     fn wifi_list(&self, rescan: bool) -> Result<Vec<wifi::Network>, OpError> {
-        if rescan {
-            // Scanning is throttled by the driver; a refusal just means the cached list is fresh enough.
-            let _ = self.backend.nmcli(&["device", "wifi", "rescan"], NM_QUICK);
-            std::thread::sleep(WIFI_RESCAN_WAIT);
-        }
-        let output = self
-            .backend
-            .nmcli(&["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "no"], NM_QUICK)
-            .map_err(nm_unavailable)?;
+        const FIELDS: [&str; 3] = ["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY"];
+        let list = |rescan: &str, timeout| {
+            let mut args = FIELDS.to_vec();
+            args.extend(["device", "wifi", "list", "--rescan", rescan]);
+            self.backend.nmcli(&args, timeout)
+        };
+        // `--rescan yes` makes nmcli wait for the scan to finish (about 4 s) and then list the
+        // fresh results. A fixed sleep was too short on a cold start, when the Pi has only
+        // seen the network it is joined to. If the driver refuses a rescan (it throttles
+        // them), settle for the cached list.
+        let output = match rescan {
+            true => match list("yes", WIFI_SCAN_WAIT) {
+                Ok(out) if out.success => out,
+                _ => list("no", NM_QUICK).map_err(nm_unavailable)?,
+            },
+            false => list("no", NM_QUICK).map_err(nm_unavailable)?,
+        };
         if !output.success {
             return Err(OpError::new(ErrorCode::Unavailable, "could not list Wi-Fi networks"));
         }
@@ -657,6 +662,8 @@ mod tests {
         nm_up_failure: Option<&'static str>,
         /// How long bringing a profile up takes.
         nm_up_delay: Option<Duration>,
+        /// Refuse `--rescan yes`, as the driver does when scans come too close together.
+        nm_scan_throttled: bool,
     }
 
     const NM_LIST: &str = "*:Fred is SPEED:61:WPA2 WPA3\n :Fred is SPEED:80:WPA2 WPA3\n :Cafe Guest:40:--\n";
@@ -666,6 +673,9 @@ mod tests {
             self.nm_calls.lock().unwrap().push(args.join(" "));
             let ok = |stdout: &str| Ok(NmOutput { success: true, stdout: stdout.to_string(), stderr: String::new() });
             if args.contains(&"list") {
+                if self.nm_scan_throttled && args.contains(&"yes") {
+                    return Ok(NmOutput { success: false, stdout: String::new(), stderr: "Scanning not allowed immediately following previous scan".into() });
+                }
                 return ok(NM_LIST);
             }
             if args.contains(&"--active") {
@@ -753,6 +763,24 @@ mod tests {
         assert_eq!(networks.len(), 2);
         assert_eq!(networks[0]["ssid"], "Fred is SPEED");
         assert_eq!(networks[1]["security"], "open");
+    }
+
+    #[test]
+    fn a_scan_waits_for_fresh_results_instead_of_sleeping() {
+        let h = handler();
+        call(&h, "wifi.scan", json!({}));
+        let calls = h.backend.nm_calls.lock().unwrap().join("\n");
+        assert!(calls.contains("device wifi list --rescan yes"), "{calls}");
+        assert!(!calls.contains("device wifi rescan"));
+    }
+
+    #[test]
+    fn a_throttled_rescan_falls_back_to_the_cached_list() {
+        let h = Handler::new(Fake { nm_scan_throttled: true, ..Default::default() });
+        let scan = call(&h, "wifi.scan", json!({}));
+        assert_eq!(scan["ok"], true);
+        assert_eq!(scan["result"]["networks"].as_array().unwrap().len(), 2);
+        assert!(h.backend.nm_calls.lock().unwrap().join("\n").contains("--rescan no"));
     }
 
     #[test]

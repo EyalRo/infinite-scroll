@@ -1,0 +1,16 @@
+<!-- Themed (monochrome) icon: the paper strip with its content knocked out. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M34,0H74V108H34Z
+            M38,27a4,4 0 1,0 8,0a4,4 0 1,0 -8,0Z
+            M49,24H66V26H49ZM49,28H60V30H49Z
+            M40,34H68V52H40Z
+            M44,41a3,3 0 1,0 6,0a3,3 0 1,0 -6,0Z
+            M40,56H62V58H40Z
+            M38,73a4,4 0 1,0 8,0a4,4 0 1,0 -8,0Z
+            M49,70H66V72H49ZM49,74H60V76H49Z
+            M40,80H68V108H40Z" />
+</vector>

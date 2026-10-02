@@ -1,0 +1,18 @@
+<!-- Interim icon: thermal paper with social posts, running off the edge. Source: android/branding/icon.svg -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFDF7" android:pathData="M34,0H74V108H34Z" />
+    <!-- post 1 -->
+    <path android:fillColor="#4F378B" android:pathData="M38,27a4,4 0 1,0 8,0a4,4 0 1,0 -8,0Z" />
+    <path android:fillColor="#4F378B" android:pathData="M49,24H66V26H49ZM49,28H60V30H49Z" />
+    <path android:fillColor="#7F67BE" android:pathData="M40,34H68V52H40Z" />
+    <path android:fillColor="#FFFDF7" android:pathData="M44,41a3,3 0 1,0 6,0a3,3 0 1,0 -6,0Z" />
+    <path android:fillColor="#4F378B" android:pathData="M40,52L52,42L60,48L64,44L68,48L68,52Z" />
+    <path android:fillColor="#4F378B" android:pathData="M40,56H62V58H40Z" />
+    <!-- divider -->
+    <path android:fillColor="#CBBFE8" android:pathData="M40,62H44V63H40ZM48,62H52V63H48ZM56,62H60V63H56ZM64,62H68V63H64Z" />
+    <!-- post 2, running off the bottom -->
+    <path android:fillColor="#4F378B" android:pathData="M38,73a4,4 0 1,0 8,0a4,4 0 1,0 -8,0Z" />
+    <path android:fillColor="#4F378B" android:pathData="M49,70H66V72H49ZM49,74H60V76H49Z" />
+    <path android:fillColor="#7F67BE" android:pathData="M40,80H68V108H40Z" />
+</vector>

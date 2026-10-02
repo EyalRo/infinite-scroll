@@ -1,0 +1,22 @@
+<!-- Interim app icon: a strip of thermal paper carrying social-media posts, running off the edge.
+     108x108 adaptive-icon canvas; the platform mask shows roughly the central 72x72.
+     Keep in sync with app/src/main/res/drawable/ic_launcher_foreground.xml. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="432" height="432">
+  <rect width="108" height="108" fill="#4F378B"/>
+  <rect x="34" width="40" height="108" fill="#FFFDF7"/>
+  <!-- post 1 -->
+  <circle cx="42" cy="27" r="4" fill="#4F378B"/>
+  <rect x="49" y="24" width="17" height="2" fill="#4F378B"/>
+  <rect x="49" y="28" width="11" height="2" fill="#4F378B"/>
+  <rect x="40" y="34" width="28" height="18" fill="#7F67BE"/>
+  <circle cx="47" cy="41" r="3" fill="#FFFDF7"/>
+  <path d="M40,52 L52,42 L60,48 L64,44 L68,48 L68,52 Z" fill="#4F378B"/>
+  <rect x="40" y="56" width="22" height="2" fill="#4F378B"/>
+  <!-- divider -->
+  <g fill="#CBBFE8"><rect x="40" y="62" width="4" height="1"/><rect x="48" y="62" width="4" height="1"/><rect x="56" y="62" width="4" height="1"/><rect x="64" y="62" width="4" height="1"/></g>
+  <!-- post 2, running off the bottom -->
+  <circle cx="42" cy="73" r="4" fill="#4F378B"/>
+  <rect x="49" y="70" width="17" height="2" fill="#4F378B"/>
+  <rect x="49" y="74" width="11" height="2" fill="#4F378B"/>
+  <rect x="40" y="80" width="28" height="28" fill="#7F67BE"/>
+</svg>

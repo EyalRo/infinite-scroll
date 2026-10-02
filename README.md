@@ -28,6 +28,12 @@ responsibility:
   and resilient by design, since after initial setup the installation goes
   permanently offline. Also serves the static frontend directly (embedded
   at compile time), so no separate webserver is needed on the Pi.
+- **`btcontrol`** (`crates/bluetooth`) — a BLE GATT server (BlueZ) that
+  is a second control surface for the offline, deployed installation: it
+  translates a small versioned protocol into calls to the `printer` and
+  `uploader` services (library, upload, print/queue/print-all, scheduler,
+  history/stats, clock sync). It owns no application state. Companion
+  Android app: `android/`. Protocol: `docs/ble-protocol.md`.
 - **Static frontend** (`web/library/`) — mobile-first library management UI
   (upload, remove, scheduler preview) plus a non-physical preview that
   simulates the scheduler's next picks. Calls `uploader` and `printer`
@@ -53,7 +59,11 @@ Shared conversion/dithering/ZPL/auth/HTTP-helper code lives in
 - `web/library/` — the static frontend (`index.html`, `style.css`,
   `app.js`), also embedded directly into the `printer` binary at compile
   time.
-- `deploy/` — systemd units for all three services and `deploy.sh`, which
+- `docs/ble-protocol.md` — the BLE control protocol (the contract between
+  `btcontrol` and the Android app); `docs/printer-settings.md` — status of
+  printer-settings (density) verification, which is still pending hardware.
+- `android/` — the Android BLE controller app.
+- `deploy/` — systemd units for all services (including `btcontrol`) and `deploy.sh`, which
   cross-compiles to `aarch64-unknown-linux-gnu` and deploys to
   `infinite-scroll.local` over SSH.
 - `docs/cloudflare-tunnel-access-setup.md` — the manual Cloudflare Tunnel

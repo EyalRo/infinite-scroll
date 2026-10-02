@@ -25,26 +25,27 @@ trap 'rm -rf "$PATCHED_DIR"' EXIT
 # versioning is not an issue in practice here (verified working against the
 # Pi's older glibc 2.41 despite building against nixpkgs' glibc 2.42).
 echo "Patching ELF interpreters for the target's glibc..."
-for name in uploader watcher printer; do
+for name in uploader watcher printer btcontrol; do
   cp "$BIN_DIR/$name" "$PATCHED_DIR/$name"
   nix shell nixpkgs#patchelf -c patchelf --set-interpreter /lib/ld-linux-aarch64.so.1 "$PATCHED_DIR/$name"
 done
 
 echo "Copying binaries..."
 ssh "$HOST" "mkdir -p /home/stags/infinite-scroll/bin"
-for name in uploader watcher printer; do
+for name in uploader watcher printer btcontrol; do
   scp "$PATCHED_DIR/$name" "$HOST:/home/stags/infinite-scroll/bin/$name.new"
   ssh "$HOST" "mv /home/stags/infinite-scroll/bin/$name.new /home/stags/infinite-scroll/bin/$name && chmod +x /home/stags/infinite-scroll/bin/$name"
 done
 
 echo "Copying systemd units..."
-scp deploy/uploader.service deploy/watcher.service deploy/printer.service "$HOST:/tmp/"
-ssh "$HOST" "sudo mv /tmp/uploader.service /tmp/watcher.service /tmp/printer.service /etc/systemd/system/ && sudo systemctl daemon-reload"
+scp deploy/uploader.service deploy/watcher.service deploy/printer.service deploy/btcontrol.service "$HOST:/tmp/"
+ssh "$HOST" "sudo mv /tmp/uploader.service /tmp/watcher.service /tmp/printer.service /tmp/btcontrol.service /etc/systemd/system/ && sudo systemctl daemon-reload"
 
 echo "Restarting services..."
-ssh "$HOST" "sudo systemctl enable --now uploader watcher printer && sudo systemctl restart uploader watcher printer"
+ssh "$HOST" "sudo systemctl enable --now uploader watcher printer btcontrol && sudo systemctl restart uploader watcher printer btcontrol"
 
 echo "Health checks..."
 ssh "$HOST" "curl -sf http://127.0.0.1:8081/health && echo ' uploader ok'"
 ssh "$HOST" "curl -sf http://127.0.0.1:8082/health && echo ' printer ok'"
+ssh "$HOST" "systemctl is-active --quiet btcontrol && echo ' btcontrol ok'"
 echo "Deploy complete."

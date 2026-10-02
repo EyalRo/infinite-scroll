@@ -1,5 +1,8 @@
+mod history;
+mod jobs;
 mod library;
 mod printer_device;
+mod printer_settings;
 mod scheduler;
 mod state;
 
@@ -22,18 +25,38 @@ struct Config {
     failed_dir: PathBuf,
     device_path: PathBuf,
     bind_addr: String,
+    /// Where uploads wait for the watcher; only used to report how many
+    /// uploads are still being converted. Optional: absent means "unknown".
+    ready_dir: Option<PathBuf>,
+    jobs_path: PathBuf,
+    history_path: PathBuf,
     state_lock: std::sync::Mutex<()>,
+    /// Guards the job queue file's read-modify-write cycles (never held
+    /// across a device write).
+    jobs_lock: std::sync::Mutex<()>,
+    history_lock: std::sync::Mutex<()>,
+    /// Serializes physical prints between the job worker and the scheduler.
+    device_lock: std::sync::Mutex<()>,
 }
 
 fn config_from_env() -> Config {
+    let state_path = PathBuf::from(env::var("PRINTER_STATE_PATH").expect("PRINTER_STATE_PATH must be set"));
+    let jobs_path = state_path.with_file_name("jobs.json");
+    let history_path = state_path.with_file_name("history.json");
     Config {
         token: env::var("PRINTER_TOKEN").expect("PRINTER_TOKEN must be set"),
-        state_path: PathBuf::from(env::var("PRINTER_STATE_PATH").expect("PRINTER_STATE_PATH must be set")),
+        state_path,
+        jobs_path,
+        history_path,
+        ready_dir: env::var("PRINTER_READY_DIR").ok().map(PathBuf::from),
         complete_dir: PathBuf::from(env::var("PRINTER_COMPLETE_DIR").expect("PRINTER_COMPLETE_DIR must be set")),
         failed_dir: PathBuf::from(env::var("PRINTER_FAILED_DIR").expect("PRINTER_FAILED_DIR must be set")),
         device_path: PathBuf::from(env::var("PRINTER_DEVICE_PATH").unwrap_or_else(|_| "/dev/usb/lp0".to_string())),
         bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8082".to_string()),
         state_lock: std::sync::Mutex::new(()),
+        jobs_lock: std::sync::Mutex::new(()),
+        history_lock: std::sync::Mutex::new(()),
+        device_lock: std::sync::Mutex::new(()),
     }
 }
 
@@ -46,6 +69,8 @@ fn main() {
 
     let scheduler_config = Arc::clone(&config);
     std::thread::spawn(move || scheduler_loop(scheduler_config));
+    let worker_config = Arc::clone(&config);
+    std::thread::spawn(move || job_worker_loop(worker_config));
 
     let server = Server::http(&config.bind_addr).expect("failed to bind printer HTTP server");
     eprintln!("printer listening on {}", config.bind_addr);
@@ -61,6 +86,7 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
     }
     let raw_url = request.url().to_string();
     let url = raw_url.split('?').next().unwrap_or(&raw_url).to_string();
+    let query = raw_url.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
     let method = request.method().clone();
 
     if url == "/health" && method == Method::Get {
@@ -88,6 +114,29 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
             let items = library::list(&config.complete_dir);
             json_response(200, &serde_json::json!({"catalog": items}))
         }
+        (path, Method::Get) if path.starts_with("/catalog/") => {
+            let id = path.trim_start_matches("/catalog/");
+            match library::get_checked(&config.complete_dir, id) {
+                Some(item) => json_response(200, &serde_json::json!({"item": item})),
+                None => json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")})),
+            }
+        }
+        ("/preview", Method::Get) => preview_response(config, &query),
+        ("/jobs", Method::Get) => jobs_response(config),
+        ("/history", Method::Get) => history_response(config, &query),
+        ("/stats", Method::Get) => stats_response(config),
+        ("/printer/capabilities", Method::Get) => json_response(
+            200,
+            &serde_json::json!({"schema": printer_settings::SCHEMA_VERSION, "settings": printer_settings::capabilities()}),
+        ),
+        ("/printer/settings", Method::Get) => json_response(
+            200,
+            &serde_json::json!({"schema": printer_settings::SCHEMA_VERSION, "values": {}}),
+        ),
+        ("/printer/settings", Method::Post) => set_printer_setting(request),
+        ("/print", Method::Post) => enqueue_print(config, request, false),
+        ("/print-all", Method::Post) => enqueue_print(config, request, true),
+        (path, Method::Delete) if path.starts_with("/jobs/") => cancel_job(config, path.trim_start_matches("/jobs/")),
         (path, Method::Delete) if path.starts_with("/catalog/") => {
             let id = path.trim_start_matches("/catalog/");
             match library::remove(&config.complete_dir, id) {
@@ -110,6 +159,10 @@ fn static_response(body: &'static str, content_type: &str) -> tiny_http::Respons
 fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     let settings = state::load(&config.state_path);
     let items = library::list(&config.complete_dir);
+    let jobs_snapshot = {
+        let _guard = config.jobs_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        jobs::JobStore::reload(&config.jobs_path)
+    };
     let failed_count = std::fs::read_dir(&config.failed_dir).map(|entries| entries.count()).unwrap_or(0);
     json_response(
         200,
@@ -118,8 +171,14 @@ fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u
                 "connected": printer_device::is_available(&config.device_path),
                 "busy": printer_device::is_busy(),
             },
+            "error": settings.last_error.clone().or_else(|| jobs_snapshot.jobs.iter().find(|job| job.state.is_active()).and_then(|job| job.error.clone())),
             "catalog_count": items.len(),
             "failed_count": failed_count,
+            "processing_count": config.ready_dir.as_ref().map(|dir| std::fs::read_dir(dir).map(|e| e.count()).unwrap_or(0)),
+            "jobs": {
+                "active": jobs_snapshot.jobs.iter().filter(|job| job.state.is_active()).count(),
+                "current": jobs_snapshot.jobs.iter().find(|job| job.state.is_active()),
+            },
             "autoprint": {
                 "enabled": settings.enabled,
                 "min_minutes": settings.min_minutes,
@@ -183,6 +242,284 @@ fn configure_autoprint(config: &Config, request: &mut tiny_http::Request) -> tin
     json_response(200, &serde_json::json!({"success": true, "autoprint": settings}))
 }
 
+fn parse_query_u32(query: &str, key: &str) -> Option<u32> {
+    query.split('&').filter_map(|pair| pair.split_once('=')).find(|(k, _)| *k == key).and_then(|(_, v)| v.parse().ok())
+}
+
+/// The scheduler's next picks, computed by the same `choose_item` the real
+/// scheduler uses. Sequential picks are exact; random picks are one sample
+/// of what the scheduler may do (`exact: false`).
+fn preview_response(config: &Config, query: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let count = parse_query_u32(query, "count").unwrap_or(3).clamp(1, 20) as usize;
+    let settings = state::load(&config.state_path);
+    let items = library::list(&config.complete_dir);
+    let mut picks = Vec::new();
+    let mut last = settings.last_item_id.clone();
+    for _ in 0..count {
+        let Some(next) = scheduler::choose_item(&items, settings.ordering, &last, &mut rand::thread_rng()).cloned() else {
+            break;
+        };
+        last = Some(next.id.clone());
+        picks.push(next);
+    }
+    json_response(
+        200,
+        &serde_json::json!({
+            "ordering": settings.ordering,
+            "exact": settings.ordering == state::Ordering::Sequential,
+            "picks": picks,
+        }),
+    )
+}
+
+fn record_print(config: &Config, record: history::Record) {
+    let _guard = config.history_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut history = history::History::load(&config.history_path);
+    history.record(record);
+    if let Err(error) = history.save(&config.history_path) {
+        eprintln!("failed to persist print history: {error}");
+    }
+}
+
+fn history_response(config: &Config, query: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let limit = parse_query_u32(query, "limit").unwrap_or(20).clamp(1, 200) as usize;
+    let _guard = config.history_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let history = history::History::load(&config.history_path);
+    // Newest first.
+    let recent: Vec<&history::Record> = history.recent.iter().rev().take(limit).collect();
+    json_response(200, &serde_json::json!({"recent": recent}))
+}
+
+/// Lifetime statistics from what this application actually records.
+/// The earlier app's "immediate vs backlog" split has no equivalent here and
+/// is not reported; `scheduled_ok` / `job_ok` are the nearest real split.
+fn stats_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let items = library::list(&config.complete_dir);
+    let failed_conversions = std::fs::read_dir(&config.failed_dir).map(|entries| entries.count()).unwrap_or(0);
+    let counters = {
+        let _guard = config.history_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        history::History::load(&config.history_path).counters
+    };
+    json_response(
+        200,
+        &serde_json::json!({
+            "library_items": items.len(),
+            "failed_conversions": failed_conversions,
+            "counters_since": if counters.since > 0.0 { Some(counters.since) } else { None },
+            "prints_ok": counters.prints_ok,
+            "prints_failed": counters.prints_failed,
+            "scheduled_ok": counters.scheduled_ok,
+            "job_ok": counters.job_ok,
+            "paper_mm": (counters.paper_mm * 100.0).round() / 100.0,
+            "item_print_total": items.iter().map(|item| item.print_count as u64).sum::<u64>(),
+        }),
+    )
+}
+
+fn set_printer_setting(request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let payload = match read_json_body(request) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let (Some(key), Some(value)) = (payload.get("key").and_then(|v| v.as_str()), payload.get("value").and_then(|v| v.as_i64())) else {
+        return json_response(400, &serde_json::json!({"error": "key must be a string and value an integer"}));
+    };
+    match printer_settings::set(key, value) {
+        Ok(()) => json_response(200, &serde_json::json!({"success": true})),
+        Err(printer_settings::SettingError::Unsupported) => {
+            json_response(501, &serde_json::json!({"error": format!("printer setting {key} is not supported")}))
+        }
+        Err(printer_settings::SettingError::OutOfRange { min, max }) => {
+            json_response(400, &serde_json::json!({"error": format!("{key} must be between {min} and {max}")}))
+        }
+    }
+}
+
+fn jobs_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let _guard = config.jobs_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let store = jobs::JobStore::reload(&config.jobs_path);
+    json_response(200, &serde_json::json!({"jobs": store.jobs}))
+}
+
+fn read_json_body(request: &mut tiny_http::Request) -> Result<serde_json::Value, tiny_http::Response<std::io::Cursor<Vec<u8>>>> {
+    let mut body = String::new();
+    if std::io::Read::read_to_string(request.as_reader(), &mut body).is_err() {
+        return Err(json_response(400, &serde_json::json!({"error": "failed to read request body"})));
+    }
+    if body.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(&body).map_err(|_| json_response(400, &serde_json::json!({"error": "invalid JSON body"})))
+}
+
+/// Accepts a print request into the persistent queue and returns at once
+/// (202); the job worker owns it from here, whether or not the caller
+/// stays connected.
+fn enqueue_print(config: &Config, request: &mut tiny_http::Request, all: bool) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let payload = match read_json_body(request) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    let copies = payload.get("copies").and_then(|v| v.as_u64()).unwrap_or(1);
+    if copies == 0 || copies > jobs::MAX_COPIES as u64 {
+        return json_response(400, &serde_json::json!({"error": format!("copies must be between 1 and {}", jobs::MAX_COPIES)}));
+    }
+    let copies = copies as u32;
+
+    let (kind, item_ids) = if all {
+        let ids: Vec<String> = library::list(&config.complete_dir).into_iter().map(|item| item.id).collect();
+        if ids.is_empty() {
+            return json_response(409, &serde_json::json!({"error": "the library is empty"}));
+        }
+        (jobs::JobKind::All, ids)
+    } else {
+        let Some(id) = payload.get("id").and_then(|v| v.as_str()) else {
+            return json_response(400, &serde_json::json!({"error": "id must be a string"}));
+        };
+        if library::get_checked(&config.complete_dir, id).is_none() {
+            return json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")}));
+        }
+        (jobs::JobKind::Item, vec![id.to_string()])
+    };
+
+    let _guard = config.jobs_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut store = jobs::JobStore::reload(&config.jobs_path);
+    if all {
+        if let Some(existing) = store.active_all_job() {
+            return json_response(409, &serde_json::json!({"error": "a print-all job is already in progress", "job": existing}));
+        }
+    }
+    let job = store.enqueue(kind, item_ids, copies, common::now_unix_seconds());
+    if let Err(error) = store.save(&config.jobs_path) {
+        return json_response(500, &serde_json::json!({"error": format!("failed to persist job: {error}")}));
+    }
+    json_response(202, &serde_json::json!({"accepted": true, "job": job}))
+}
+
+fn cancel_job(config: &Config, id: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let _guard = config.jobs_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut store = jobs::JobStore::reload(&config.jobs_path);
+    let Some(job) = store.find_mut(id) else {
+        return json_response(404, &serde_json::json!({"error": format!("no job with id {id}")}));
+    };
+    if !job.state.is_active() {
+        return json_response(409, &serde_json::json!({"error": "job already finished", "job": job}));
+    }
+    job.state = jobs::JobState::Cancelled;
+    job.finished_at = Some(common::now_unix_seconds());
+    let snapshot = job.clone();
+    if let Err(error) = store.save(&config.jobs_path) {
+        return json_response(500, &serde_json::json!({"error": format!("failed to persist job: {error}")}));
+    }
+    json_response(200, &serde_json::json!({"success": true, "job": snapshot}))
+}
+
+/// Runs forever, printing the oldest active job one unit at a time. State
+/// is reloaded from disk around every print, so a cancel or restart between
+/// units is honoured and a crash resumes from the recorded progress.
+fn job_worker_loop(config: Arc<Config>) {
+    // Retry pacing after a device failure (paper out, cover open, USB glitch).
+    const RETRY_DELAY: Duration = Duration::from_secs(15);
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Phase 1: pick the next unit under the jobs lock, then release it.
+        let (job_id, item_id) = {
+            let _guard = config.jobs_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut store = jobs::JobStore::load(&config.jobs_path);
+            let Some(job_id) = store.next_active_id() else { continue };
+            let job = store.find_mut(&job_id).expect("id came from this store");
+            job.state = jobs::JobState::Running;
+            match job.next_item().map(str::to_string) {
+                Some(item_id) => {
+                    let _ = store.save(&config.jobs_path);
+                    (job_id, item_id)
+                }
+                None => {
+                    job.state = jobs::JobState::Done;
+                    job.finished_at = Some(common::now_unix_seconds());
+                    let _ = store.save(&config.jobs_path);
+                    continue;
+                }
+            }
+        };
+
+        // Phase 2: print outside the jobs lock (it can take up to 15 s).
+        enum Outcome {
+            Printed,
+            Skipped,
+            Failed(String),
+        }
+        let item_name = library::get(&config.complete_dir, &item_id).map(|item| item.original_filename).unwrap_or_default();
+        let outcome = match library::read_zpl(&config.complete_dir, &item_id) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Outcome::Skipped,
+            Err(error) => Outcome::Failed(format!("failed to read print job for {item_id}: {error}")),
+            Ok(zpl_text) => {
+                let result = {
+                    let _device = config.device_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    printer_device::print_zpl(&config.device_path, &zpl_text, Duration::from_secs(15))
+                };
+                record_print(
+                    &config,
+                    history::Record {
+                        at: common::now_unix_seconds(),
+                        origin: history::Origin::Job,
+                        item_id: item_id.clone(),
+                        original_filename: item_name.clone(),
+                        job_id: Some(job_id.clone()),
+                        success: result.success,
+                        error: (!result.success).then(|| result.message.clone()),
+                        paper_mm: history::paper_mm_from_zpl(&zpl_text),
+                    },
+                );
+                if result.success {
+                    let _ = library::mark_printed(&config.complete_dir, &item_id, common::now_unix_seconds());
+                    Outcome::Printed
+                } else {
+                    Outcome::Failed(result.message)
+                }
+            }
+        };
+
+        // Phase 3: record the outcome, unless the job was cancelled meanwhile.
+        let failed = matches!(outcome, Outcome::Failed(_));
+        {
+            let _guard = config.jobs_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut store = jobs::JobStore::reload(&config.jobs_path);
+            if let Some(job) = store.find_mut(&job_id).filter(|job| job.state.is_active()) {
+                match outcome {
+                    Outcome::Printed => {
+                        job.done += 1;
+                        job.consecutive_failures = 0;
+                        job.error = None;
+                    }
+                    Outcome::Skipped => {
+                        job.done += 1;
+                        job.skipped += 1;
+                    }
+                    Outcome::Failed(message) => {
+                        eprintln!("job {job_id}: print failed for {item_id}: {message}");
+                        job.consecutive_failures += 1;
+                        job.error = Some(message);
+                        if job.consecutive_failures >= jobs::MAX_CONSECUTIVE_FAILURES {
+                            job.state = jobs::JobState::Failed;
+                            job.finished_at = Some(common::now_unix_seconds());
+                        }
+                    }
+                }
+                if job.state.is_active() && job.next_item().is_none() {
+                    job.state = jobs::JobState::Done;
+                    job.finished_at = Some(common::now_unix_seconds());
+                }
+                let _ = store.save(&config.jobs_path);
+            }
+        }
+        if failed {
+            std::thread::sleep(RETRY_DELAY);
+        }
+    }
+}
+
 /// Runs forever. Ticks once a second; each tick checks whether autoprint
 /// is enabled and whether `next_print_at` has passed, and if so selects
 /// and prints one item before scheduling the next delay. Reads state
@@ -244,7 +581,23 @@ fn scheduler_loop(config: Arc<Config>) {
             }
         };
 
-        let result = printer_device::print_zpl(&config.device_path, &zpl_text, Duration::from_secs(15));
+        let result = {
+            let _device = config.device_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            printer_device::print_zpl(&config.device_path, &zpl_text, Duration::from_secs(15))
+        };
+        record_print(
+            &config,
+            history::Record {
+                at: common::now_unix_seconds(),
+                origin: history::Origin::Scheduled,
+                item_id: chosen.id.clone(),
+                original_filename: chosen.original_filename.clone(),
+                job_id: None,
+                success: result.success,
+                error: (!result.success).then(|| result.message.clone()),
+                paper_mm: history::paper_mm_from_zpl(&zpl_text),
+            },
+        );
         if result.success {
             let printed_at = common::now_unix_seconds();
             let _ = library::mark_printed(&config.complete_dir, &chosen.id, printed_at);

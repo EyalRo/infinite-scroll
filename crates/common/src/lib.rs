@@ -82,10 +82,8 @@ pub fn normalize_and_convert(bytes: &[u8]) -> Result<ZplJob, ConvertError> {
         return Err(ConvertError("image dimensions are too large".into()));
     }
 
-    // Flatten any alpha onto white, then convert to grayscale -- matches
-    // the Python pipeline's RGBA-composite-then-L-convert behavior for
-    // images with transparency, and is a no-op (transparency == fully
-    // opaque) for opaque images either way.
+    // Flatten any alpha onto white, then convert to grayscale. This is a
+    // no-op for opaque images; transparent regions print as white paper.
     let rgba = decoded.to_rgba8();
     let mut flattened = image::ImageBuffer::from_pixel(rgba.width(), rgba.height(), image::Rgb([255u8, 255, 255]));
     for (x, y, pixel) in rgba.enumerate_pixels() {

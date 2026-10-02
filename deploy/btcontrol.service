@@ -1,0 +1,28 @@
+[Unit]
+Description=Infinite Scroll Bluetooth control (BLE GATT server)
+After=bluetooth.service printer.service uploader.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+User=stags
+# Talk to bluetoothd over the system D-Bus.
+SupplementaryGroups=bluetooth
+# Only capability granted: set the system clock when the phone syncs it.
+AmbientCapabilities=CAP_SYS_TIME
+CapabilityBoundingSet=CAP_SYS_TIME
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+Environment=PRINTER_URL=http://127.0.0.1:8082
+Environment=UPLOADER_URL=http://127.0.0.1:8081
+Environment=RUST_LOG=info
+# Holds PRINTER_TOKEN and UPLOADER_TOKEN (same values as printer.env /
+# uploader.env). Created on the Pi, never committed.
+EnvironmentFile=/etc/infinite-scroll/bluetooth.env
+ExecStart=/home/stags/infinite-scroll/bin/btcontrol
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

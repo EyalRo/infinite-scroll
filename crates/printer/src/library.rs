@@ -49,6 +49,15 @@ fn is_valid_id(id: &str) -> bool {
     !id.contains('/') && !id.contains("..")
 }
 
+/// `get` for ids that arrive from a client: rejects path-traversal ids the
+/// same way `remove` does.
+pub fn get_checked(complete_dir: &Path, id: &str) -> Option<CatalogItem> {
+    if !is_valid_id(id) {
+        return None;
+    }
+    get(complete_dir, id)
+}
+
 /// Removes both the sidecar and the print-ready ZPL file. Returns the
 /// removed item's metadata so the caller (the HTTP API) can echo it back,
 /// or `None` if no such item exists (the caller answers 404).

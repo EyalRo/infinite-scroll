@@ -35,7 +35,7 @@ fn preflight(zpl_text: &str, device_path: &Path) -> Option<String> {
 }
 
 /// Serialized (one write at a time) and bounded (default 15s) -- this
-/// exists because of a 2026-09-13 incident in the old Python pipeline,
+/// exists because of a 2026-09-13 incident in an earlier implementation,
 /// where a stuck/offline printer left a raw device write hanging
 /// indefinitely and wedged the whole process; the bounded timeout plus the
 /// `AtomicBool` serialization above are what prevent a repeat here.

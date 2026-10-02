@@ -1,0 +1,23 @@
+[package]
+name = "bluetooth"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "btcontrol"
+path = "src/main.rs"
+
+[dependencies]
+common = { path = "../common" }
+bluer = { version = "0.17", features = ["bluetoothd"] }
+# bluer links libdbus; vendoring it lets the existing cross-compile in
+# deploy/deploy.sh build without an aarch64 libdbus-dev on the build host.
+libdbus-sys = { version = "0.2", features = ["vendored"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+futures = "0.3"
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["json"] }
+crc32fast = "1"
+libc = "0.2"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false }

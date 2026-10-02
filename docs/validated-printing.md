@@ -77,8 +77,3 @@ hardware exposes those signals.
 The `printer` app (see `crates/printer/src/printer_device.rs`) already
 serializes device writes and fails closed on a missing/busy printer, per
 this document's original requirement.
-
-Note: `/var/lib/infinite-scroll/posts/` and `/var/lib/infinite-scroll/print-ready/`
-were the old Python app's paths, kept on disk for one deploy cycle as a
-rollback reference (see Task 13 of `docs/superpowers/plans/2026-09-17-rust-print-services.md`)
-but no longer written to.

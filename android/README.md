@@ -21,6 +21,9 @@ Target: Pixel on Android 17; `minSdk 33`.
 
 ## Build
 
+On Nix or NixOS, see [`docs/android-build-nix.md`](../docs/android-build-nix.md) for a no-install route (SDK, JDK and `adb` from `nix shell`).
+
+
 ```sh
 ./gradlew :protocol:test          # anywhere
 ./gradlew :app:assembleDebug      # with the Android SDK installed

@@ -61,9 +61,6 @@ impl std::fmt::Display for ConvertError {
 /// and packs into a ZPL job. The single entry point the watcher calls for
 /// every file it picks up from `ready/`.
 ///
-/// Known v1 limitation: EXIF orientation is not read or applied, so a
-/// phone photo taken in portrait (which typically stores landscape pixel
-/// data plus an EXIF rotation tag) may print rotated.
 pub fn normalize_and_convert(bytes: &[u8]) -> Result<ZplJob, ConvertError> {
     if bytes.is_empty() {
         return Err(ConvertError("upload is empty".into()));
@@ -75,8 +72,24 @@ pub fn normalize_and_convert(bytes: &[u8]) -> Result<ZplJob, ConvertError> {
         return Err(ConvertError("not a PNG or JPEG image".into()));
     }
 
-    let decoded = image::load_from_memory(bytes)
+    // JPEGs from phones commonly store their intended portrait orientation
+    // in EXIF rather than rotating the encoded pixels. Read it from the
+    // decoder before consuming it, then apply it to the decoded raster.
+    // An invalid or absent EXIF block must not make an otherwise printable
+    // image fail conversion, so it deliberately falls back to no transform.
+    use image::ImageDecoder;
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| ConvertError(format!("failed to read image: {error}")))?;
+    let mut decoder = reader
+        .into_decoder()
         .map_err(|error| ConvertError(format!("failed to decode image: {error}")))?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut decoded = image::DynamicImage::from_decoder(decoder)
+        .map_err(|error| ConvertError(format!("failed to decode image: {error}")))?;
+    decoded.apply_orientation(orientation);
 
     if (decoded.width() as u64) * (decoded.height() as u64) > MAX_IMAGE_PIXELS {
         return Err(ConvertError("image dimensions are too large".into()));
@@ -110,6 +123,21 @@ pub fn normalize_and_convert(bytes: &[u8]) -> Result<ZplJob, ConvertError> {
     Ok(zpl::pack_to_zpl(&bits, PRINT_WIDTH_PX, height))
 }
 
+/// Renders a stored ZPL job back into a viewable PNG -- exactly the 1-bit
+/// black/white image that will come out of the printer, not the original
+/// upload (which is discarded once converted). The catalog only keeps the
+/// packed ZPL text, so this decodes it back out rather than requiring a
+/// separately-stored preview image that could drift out of sync with it.
+pub fn zpl_to_preview_png(zpl_text: &str) -> Result<Vec<u8>, String> {
+    let (bits, width, height) = zpl::unpack_from_zpl(zpl_text).map_err(|error| error.0)?;
+    let image = image::GrayImage::from_raw(width, height, bits).ok_or_else(|| "decoded bitmap size mismatch".to_string())?;
+    let mut png_bytes = Vec::new();
+    image::DynamicImage::ImageLuma8(image)
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(|error| format!("failed to encode preview PNG: {error}"))?;
+    Ok(png_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +149,57 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
             .unwrap();
         bytes
+    }
+
+    fn jpeg_with_orientation(width: u32, height: u32, orientation: u8) -> Vec<u8> {
+        let image = image::RgbImage::from_pixel(width, height, image::Rgb([10, 20, 30]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&image::DynamicImage::ImageRgb8(image))
+            .unwrap();
+
+        // APP1 / Exif block containing one little-endian Orientation entry.
+        // JPEG segment length includes its two-byte length field, not marker.
+        let exif = [
+            b'E',
+            b'x',
+            b'i',
+            b'f',
+            0,
+            0,
+            b'I',
+            b'I',
+            42,
+            0,
+            8,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0x12,
+            0x01,
+            3,
+            0,
+            1,
+            0,
+            0,
+            0,
+            orientation,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+        let mut oriented = Vec::with_capacity(jpeg.len() + exif.len() + 4);
+        oriented.extend_from_slice(&jpeg[..2]); // SOI
+        oriented.extend_from_slice(&[0xff, 0xe1, 0, (exif.len() as u8) + 2]);
+        oriented.extend_from_slice(&exif);
+        oriented.extend_from_slice(&jpeg[2..]);
+        oriented
     }
 
     #[test]
@@ -141,6 +220,15 @@ mod tests {
         assert_eq!(job.width, PRINT_WIDTH_PX);
         assert_eq!(job.height, 325); // 50 * 650 / 100
         assert!(job.text.starts_with("^XA\n^PW650\n"));
+    }
+
+    #[test]
+    fn honors_exif_orientation_before_calculating_print_height() {
+        // The stored pixels are landscape, but EXIF orientation 6 makes the
+        // displayed image portrait. Height must therefore reflect 20x40,
+        // not the encoded 40x20 dimensions.
+        let job = normalize_and_convert(&jpeg_with_orientation(40, 20, 6)).unwrap();
+        assert_eq!((job.width, job.height), (PRINT_WIDTH_PX, 1_300));
     }
 
     #[test]

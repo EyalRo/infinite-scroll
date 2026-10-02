@@ -8,7 +8,9 @@ pub fn json_response(status: u16, body: &serde_json::Value) -> Response<std::io:
     let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
     let header = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
         .expect("static header name/value is always valid");
-    Response::from_data(bytes).with_status_code(status).with_header(header)
+    Response::from_data(bytes)
+        .with_status_code(status)
+        .with_header(header)
 }
 
 /// Case-insensitive header lookup -- HTTP header names are case-insensitive
@@ -21,16 +23,40 @@ pub fn header_value<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
         .map(|header| header.value.as_str())
 }
 
-/// The three services and the frontend all live under
-/// *.infinite-scroll.art.virtualdino.com but are different origins from a
-/// browser's perspective -- every response needs this, and every OPTIONS
-/// preflight needs a bare 204 carrying just these headers.
-pub fn with_cors(response: Response<std::io::Cursor<Vec<u8>>>) -> Response<std::io::Cursor<Vec<u8>>> {
+/// The three services and the frontend all live under flat
+/// infinite-scroll-*.virtualdino.com hostnames (the free wildcard cert only
+/// covers one level, so the original *.infinite-scroll.art.virtualdino.com
+/// nesting was abandoned) but are still different origins from a browser's
+/// perspective -- every response needs this, and every OPTIONS preflight
+/// needs a bare 204 carrying just these headers.
+pub fn with_cors(
+    response: Response<std::io::Cursor<Vec<u8>>>,
+) -> Response<std::io::Cursor<Vec<u8>>> {
     response
-        .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"https://library.infinite-scroll.art.virtualdino.com"[..]).unwrap())
-        .with_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, DELETE, OPTIONS"[..]).unwrap())
-        .with_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Authorization, Content-Type"[..]).unwrap())
-        .with_header(Header::from_bytes(&b"Access-Control-Allow-Credentials"[..], &b"true"[..]).unwrap())
+        .with_header(
+            Header::from_bytes(
+                &b"Access-Control-Allow-Origin"[..],
+                &b"https://infinite-scroll-library.virtualdino.com"[..],
+            )
+            .unwrap(),
+        )
+        .with_header(
+            Header::from_bytes(
+                &b"Access-Control-Allow-Methods"[..],
+                &b"GET, POST, DELETE, OPTIONS"[..],
+            )
+            .unwrap(),
+        )
+        .with_header(
+            Header::from_bytes(
+                &b"Access-Control-Allow-Headers"[..],
+                &b"Authorization, Content-Type"[..],
+            )
+            .unwrap(),
+        )
+        .with_header(
+            Header::from_bytes(&b"Access-Control-Allow-Credentials"[..], &b"true"[..]).unwrap(),
+        )
 }
 
 pub fn cors_preflight_response() -> Response<std::io::Cursor<Vec<u8>>> {
@@ -51,14 +77,27 @@ mod tests {
     fn with_cors_sets_the_exact_expected_header_values() {
         let response = with_cors(json_response(200, &serde_json::json!({})));
         let expected: &[(&str, &str)] = &[
-            ("Access-Control-Allow-Origin", "https://library.infinite-scroll.art.virtualdino.com"),
+            (
+                "Access-Control-Allow-Origin",
+                "https://infinite-scroll-library.virtualdino.com",
+            ),
             ("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"),
-            ("Access-Control-Allow-Headers", "Authorization, Content-Type"),
+            (
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type",
+            ),
             ("Access-Control-Allow-Credentials", "true"),
         ];
         for (name, value) in expected {
-            let found = response.headers().iter().find(|header| header.field.as_str().as_str().eq_ignore_ascii_case(name));
-            assert_eq!(found.map(|header| header.value.as_str()), Some(*value), "missing or wrong value for header {name}");
+            let found = response
+                .headers()
+                .iter()
+                .find(|header| header.field.as_str().as_str().eq_ignore_ascii_case(name));
+            assert_eq!(
+                found.map(|header| header.value.as_str()),
+                Some(*value),
+                "missing or wrong value for header {name}"
+            );
         }
     }
 }

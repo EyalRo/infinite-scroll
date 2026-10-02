@@ -4,7 +4,11 @@
 ///    request that already passed Cloudflare Access at the edge -- these
 ///    services are only reachable through the Access-protected Tunnel, so
 ///    presence alone is sufficient; no local JWKS/JWT verification is done).
-pub fn is_authorized(bearer_header: Option<&str>, access_jwt_header: Option<&str>, expected_token: &str) -> bool {
+pub fn is_authorized(
+    bearer_header: Option<&str>,
+    access_jwt_header: Option<&str>,
+    expected_token: &str,
+) -> bool {
     if let Some(value) = bearer_header {
         if let Some(token) = value.strip_prefix("Bearer ") {
             if constant_time_eq(token.as_bytes(), expected_token.as_bytes()) {

@@ -2,8 +2,10 @@ mod library;
 mod printer_device;
 mod scheduler;
 mod state;
+mod upload_proxy;
 
 use std::env;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +25,8 @@ struct Config {
     device_path: PathBuf,
     bind_addr: String,
     state_lock: std::sync::Mutex<()>,
+    uploader_addr: String,
+    uploader_token: String,
 }
 
 fn config_from_env() -> Config {
@@ -34,6 +38,10 @@ fn config_from_env() -> Config {
         device_path: PathBuf::from(env::var("PRINTER_DEVICE_PATH").unwrap_or_else(|_| "/dev/usb/lp0".to_string())),
         bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8082".to_string()),
         state_lock: std::sync::Mutex::new(()),
+        // Lets printer proxy POST /uploads to the (genuinely separate)
+        // uploader service over loopback -- see upload_proxy.rs for why.
+        uploader_addr: env::var("UPLOADER_INTERNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:8081".to_string()),
+        uploader_token: env::var("UPLOADER_TOKEN").expect("UPLOADER_TOKEN must be set"),
     }
 }
 
@@ -95,16 +103,102 @@ fn handle(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Respo
                 None => json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")})),
             }
         }
+        (path, Method::Get) if path.starts_with("/catalog/") && path.ends_with("/preview.png") => {
+            let id = path.trim_start_matches("/catalog/").trim_end_matches("/preview.png");
+            return common::http::with_cors(preview_png_response(config, id));
+        }
+        (path, Method::Post) if path.starts_with("/catalog/") && path.ends_with("/print") => {
+            let id = path.trim_start_matches("/catalog/").trim_end_matches("/print");
+            manual_print_response(config, id)
+        }
         ("/autoprint", Method::Post) => configure_autoprint(config, request),
+        ("/uploads", Method::Post) => upload_proxy_response(config, request),
         _ => json_response(404, &serde_json::json!({"error": "not found"})),
     };
     common::http::with_cors(response)
 }
 
+/// Relays an upload to the uploader service over loopback -- see
+/// upload_proxy.rs for why this exists as same-origin proxy rather than
+/// having the browser call uploader's own (genuinely separate) origin
+/// directly.
+fn upload_proxy_response(config: &Config, request: &mut tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    if let Err(error) = request.as_reader().take(common::MAX_UPLOAD_BYTES as u64 + 1).read_to_end(&mut bytes) {
+        return json_response(400, &serde_json::json!({"error": format!("failed to read request body: {error}")}));
+    }
+    if bytes.len() as u64 > common::MAX_UPLOAD_BYTES as u64 {
+        return json_response(413, &serde_json::json!({"error": "upload exceeds the 20 MB limit"}));
+    }
+    match upload_proxy::forward_upload(&config.uploader_addr, &config.uploader_token, &bytes) {
+        Ok((status, body)) => {
+            let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).expect("static header name/value is always valid");
+            tiny_http::Response::from_data(body).with_status_code(status).with_header(header)
+        }
+        Err(error) => json_response(502, &serde_json::json!({"error": format!("upload proxy failed: {error}")})),
+    }
+}
+
+/// Renders a catalog item's stored ZPL job back into the exact B&W bitmap
+/// it will print, so the frontend's preview shows the real thing rather
+/// than just a filename -- the original upload is discarded once
+/// converted, so there's nothing else image-like to show.
+fn preview_png_response(config: &Config, id: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    if !library::is_valid_id(id) {
+        return json_response(404, &serde_json::json!({"error": "not found"}));
+    }
+    let Ok(zpl_text) = library::read_zpl(&config.complete_dir, id) else {
+        return json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")}));
+    };
+    match common::zpl_to_preview_png(&zpl_text) {
+        Ok(png_bytes) => {
+            let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..])
+                .expect("static header name/value is always valid");
+            tiny_http::Response::from_data(png_bytes).with_header(header)
+        }
+        Err(error) => json_response(500, &serde_json::json!({"error": format!("failed to render preview: {error}")})),
+    }
+}
+
+/// Prints one catalog item immediately, on demand -- deliberately
+/// independent of the autoprint scheduler: it never touches `Settings`
+/// (`shuffle_queue`, `last_item_id`, `next_print_at`), only the item's own
+/// print_count/last_printed_at, so a manual print neither consumes a slot
+/// in nor perturbs the ordering of the current shuffle-cycle/sequential
+/// pass. Safe to call concurrently with the scheduler's own prints --
+/// `printer_device::print_zpl` already serializes physical writes via its
+/// busy flag and just returns a clean "printer busy" error on collision.
+fn manual_print_response(config: &Config, id: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    if !library::is_valid_id(id) {
+        return json_response(404, &serde_json::json!({"error": "not found"}));
+    }
+    if library::get(&config.complete_dir, id).is_none() {
+        return json_response(404, &serde_json::json!({"error": format!("no catalog item with id {id}")}));
+    }
+    let Ok(zpl_text) = library::read_zpl(&config.complete_dir, id) else {
+        return json_response(404, &serde_json::json!({"error": format!("no print job stored for {id}")}));
+    };
+    let result = printer_device::print_zpl(&config.device_path, &zpl_text, Duration::from_secs(15));
+    if result.success {
+        let _ = library::mark_printed(&config.complete_dir, id, common::now_unix_seconds());
+        json_response(200, &serde_json::json!({"success": true, "message": result.message}))
+    } else {
+        json_response(502, &serde_json::json!({"success": false, "error": result.message}))
+    }
+}
+
 fn static_response(body: &'static str, content_type: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes())
+    let content_type_header = tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes())
         .expect("static header name/value is always valid");
-    tiny_http::Response::from_data(body.as_bytes().to_vec()).with_header(header)
+    // Without this, Cloudflare's edge applies its own default TTL to these
+    // extensions (.html/.css/.js) and keeps serving a pre-deploy copy for
+    // hours after a redeploy, since the binary embeds these via include_str!
+    // and there's no per-deploy filename/hash to bust the cache key with.
+    let cache_control_header = tiny_http::Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..])
+        .expect("static header name/value is always valid");
+    tiny_http::Response::from_data(body.as_bytes().to_vec())
+        .with_header(content_type_header)
+        .with_header(cache_control_header)
 }
 
 fn status_response(config: &Config) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
@@ -224,7 +318,9 @@ fn scheduler_loop(config: Arc<Config>) {
         }
 
         let items = library::list(&config.complete_dir);
-        let Some(chosen) = scheduler::choose_item(&items, settings.ordering, &settings.last_item_id, &mut rand::thread_rng()).cloned() else {
+        let Some(chosen) =
+            scheduler::choose_item(&items, settings.ordering, &settings.last_item_id, &mut settings.shuffle_queue, &mut rand::thread_rng()).cloned()
+        else {
             settings.next_print_at = Some(
                 common::now_unix_seconds() + scheduler::random_delay_seconds(settings.min_minutes, settings.max_minutes, &mut rand::thread_rng()),
             );

@@ -45,7 +45,7 @@ pub fn get(complete_dir: &Path, id: &str) -> Option<CatalogItem> {
 /// escape `complete_dir` when joined into a path -- reject it up front and
 /// let the caller treat it exactly like an unknown id (404), rather than
 /// giving path-traversal attempts a distinct error shape to probe with.
-fn is_valid_id(id: &str) -> bool {
+pub fn is_valid_id(id: &str) -> bool {
     !id.contains('/') && !id.contains("..")
 }
 

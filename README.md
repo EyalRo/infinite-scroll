@@ -89,9 +89,8 @@ Shared conversion/dithering/ZPL/auth/HTTP-helper code lives in
   the real hostnames and service-token credentials first.
 - Autoprint defaults to disabled (`printer/state.json`'s `enabled: false`)
   until the installation is ready to go live.
-- No EXIF auto-rotation in v1 — a deliberate simplification versus the old
-  Python pipeline. A phone photo taken in portrait may print rotated; this
-  is a known follow-up, not a silent gap.
+- JPEG EXIF orientation is applied before scaling, so phone photos print in
+  their intended portrait or landscape orientation.
 
 ## Deploying
 

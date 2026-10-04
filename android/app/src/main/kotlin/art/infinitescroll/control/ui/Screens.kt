@@ -18,6 +18,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -206,35 +209,37 @@ private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
         }
         state.uploadProgress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
         Text("${state.library.size} item(s). PNG or JPEG, up to 20 MB.", style = MaterialTheme.typography.bodySmall)
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             items(state.library, key = { it.id }) { item ->
                 LaunchedEffect(item.id) { vm.loadThumbnail(item.id) }
                 Card(Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         val thumbnail = state.thumbnails[item.id]
                         if (thumbnail != null) {
                             Image(
                                 bitmap = thumbnail,
                                 contentDescription = "Library image",
-                                modifier = Modifier.width(72.dp).aspectRatio(thumbnail.width.toFloat() / thumbnail.height.toFloat()),
+                                modifier = Modifier.fillMaxWidth().aspectRatio(thumbnail.width.toFloat() / thumbnail.height.toFloat()),
                                 contentScale = ContentScale.Fit,
                             )
                         } else {
-                            Box(Modifier.width(72.dp).aspectRatio(0.67f)) {} // keeps rows from jumping while it loads
+                            Box(Modifier.fillMaxWidth().aspectRatio(0.67f)) {} // keeps cells from jumping while it loads
                         }
-                        Column {
-                            Text("Printed ${item.printCount}×", style = MaterialTheme.typography.bodyLarge)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                // One tap queues exactly one print; the Pi owns the job from there.
-                                FilledTonalIconButton(
-                                    onClick = { vm.print(item, 1) },
-                                    modifier = Modifier.semantics { contentDescription = "Print this image" },
-                                ) { Text("🖨️", fontSize = 20.sp) }
-                                FilledTonalIconButton(
-                                    onClick = { deleting = item },
-                                    modifier = Modifier.semantics { contentDescription = "Remove this image" },
-                                ) { Text("🗑️", fontSize = 20.sp) }
-                            }
+                        Text("Printed ${item.printCount}×", style = MaterialTheme.typography.bodyMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // One tap queues exactly one print; the Pi owns the job from there.
+                            FilledTonalIconButton(
+                                onClick = { vm.print(item, 1) },
+                                modifier = Modifier.semantics { contentDescription = "Print this image" },
+                            ) { Text("🖨️", fontSize = 20.sp) }
+                            FilledTonalIconButton(
+                                onClick = { deleting = item },
+                                modifier = Modifier.semantics { contentDescription = "Remove this image" },
+                            ) { Text("🗑️", fontSize = 20.sp) }
                         }
                     }
                 }

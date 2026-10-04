@@ -36,7 +36,6 @@ private fun Root(viewModel: InstallationViewModel) {
         ConnectScreen(
             state = state,
             onScan = { permissions.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)) },
-            onConnect = viewModel::connect,
             onDismissNotice = viewModel::dismissNotice,
         )
     }

@@ -1,7 +1,6 @@
 package art.infinitescroll.control.ui
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothDevice
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -102,25 +101,15 @@ private fun Line(label: String, value: String) {
 
 @SuppressLint("MissingPermission") // Names are only listed after BLUETOOTH_CONNECT was granted.
 @Composable
-fun ConnectScreen(state: UiState, onScan: () -> Unit, onConnect: (BluetoothDevice) -> Unit, onDismissNotice: () -> Unit) {
+fun ConnectScreen(state: UiState, onScan: () -> Unit, onDismissNotice: () -> Unit) {
     Scaffold { padding ->
         Column(Modifier.padding(padding).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Infinite Scroll", style = MaterialTheme.typography.headlineMedium)
-            Text("Find the installation over Bluetooth. No Wi-Fi needed.")
+            Text("Scanning connects to the installation as soon as it is found. No Wi-Fi needed.")
             state.notice?.let { Text(it.text, color = MaterialTheme.colorScheme.error); TextButton(onClick = onDismissNotice) { Text("Dismiss") } }
             when (state.link) {
                 LinkState.CONNECTING -> { Text("Connecting…"); LinearProgressIndicator(Modifier.fillMaxWidth()) }
                 else -> Button(onClick = onScan, enabled = !state.scanning) { Text(if (state.scanning) "Scanning…" else "Scan") }
-            }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(state.devices, key = { it.address }) { device ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column { Text(device.name ?: "Infinite Scroll"); Text(device.address, style = MaterialTheme.typography.bodySmall) }
-                            Button(onClick = { onConnect(device) }) { Text("Connect") }
-                        }
-                    }
-                }
             }
         }
     }
@@ -186,8 +175,7 @@ private fun StatusScreen(state: UiState, vm: InstallationViewModel) {
                 val piMs = state.status?.clock?.unixMs
                 Line("Pi time", piMs?.let(::fmtMs) ?: "—")
                 Line("Phone time", fmtMs(System.currentTimeMillis()))
-                Text("The Pi has no network time when offline; sync it after any power loss.", style = MaterialTheme.typography.bodySmall)
-                Button(onClick = vm::syncClock) { Text("Set Pi clock from phone") }
+                Text("The Pi's clock is set from the phone each time the app connects.", style = MaterialTheme.typography.bodySmall)
             }
             state.stats?.let { s ->
                 Section("Statistics") {
@@ -227,7 +215,7 @@ private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
                         if (thumbnail != null) {
                             Image(
                                 bitmap = thumbnail,
-                                contentDescription = "Preview of ${item.originalFilename}",
+                                contentDescription = "Library image",
                                 modifier = Modifier.width(72.dp).aspectRatio(thumbnail.width.toFloat() / thumbnail.height.toFloat()),
                                 contentScale = ContentScale.Fit,
                             )
@@ -235,17 +223,16 @@ private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
                             Box(Modifier.width(72.dp).aspectRatio(0.67f)) {} // keeps rows from jumping while it loads
                         }
                         Column {
-                            Text(item.originalFilename, style = MaterialTheme.typography.bodyLarge)
-                            Text("Printed ${item.printCount}× · added ${fmtTime(item.addedAt)}", style = MaterialTheme.typography.bodySmall)
+                            Text("Printed ${item.printCount}×", style = MaterialTheme.typography.bodyLarge)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 // One tap queues exactly one print; the Pi owns the job from there.
                                 FilledTonalIconButton(
                                     onClick = { vm.print(item, 1) },
-                                    modifier = Modifier.semantics { contentDescription = "Print ${item.originalFilename}" },
+                                    modifier = Modifier.semantics { contentDescription = "Print this image" },
                                 ) { Text("🖨️", fontSize = 20.sp) }
                                 FilledTonalIconButton(
                                     onClick = { deleting = item },
-                                    modifier = Modifier.semantics { contentDescription = "Remove ${item.originalFilename}" },
+                                    modifier = Modifier.semantics { contentDescription = "Remove this image" },
                                 ) { Text("🗑️", fontSize = 20.sp) }
                             }
                         }
@@ -262,7 +249,7 @@ private fun LibraryScreen(state: UiState, vm: InstallationViewModel) {
         AlertDialog(
             onDismissRequest = { deleting = null },
             title = { Text("Remove artwork?") },
-            text = { Text("${item.originalFilename} will be removed from the library.") },
+            text = { Text("This image will be removed from the library.") },
             confirmButton = { TextButton(onClick = { vm.delete(item); deleting = null }) { Text("Remove") } },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
@@ -425,13 +412,6 @@ private fun ScheduleScreen(state: UiState, vm: InstallationViewModel) {
                 }
                 Button(onClick = { vm.setSchedule(lo.roundToInt().toDouble(), hi.roundToInt().toDouble(), ordering) }) { Text("Save timing") }
                 Text("Saving re-arms the timer. Each wait is a random time between the two values.", style = MaterialTheme.typography.bodySmall)
-            }
-            Section("Preview — next picks") {
-                val preview = state.preview
-                if (preview == null || preview.picks.isEmpty()) Text("The library is empty — nothing to preview.") else {
-                    if (!preview.exact) Text("Random order: this is one possible outcome.", style = MaterialTheme.typography.bodySmall)
-                    preview.picks.forEachIndexed { i, item -> Text("${i + 1}. ${item.originalFilename}") }
-                }
             }
         }
     }

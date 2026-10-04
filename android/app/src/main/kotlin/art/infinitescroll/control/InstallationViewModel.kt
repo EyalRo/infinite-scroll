@@ -18,7 +18,6 @@ import art.infinitescroll.protocol.HistoryRecord
 import art.infinitescroll.protocol.InstallationApi
 import art.infinitescroll.protocol.Job
 import art.infinitescroll.protocol.LibraryItem
-import art.infinitescroll.protocol.Preview
 import art.infinitescroll.protocol.RpcClient
 import art.infinitescroll.protocol.RpcException
 import art.infinitescroll.protocol.Schedule
@@ -32,6 +31,9 @@ import kotlinx.coroutines.Job as CoroutineJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -42,14 +44,12 @@ data class Notice(val kind: NoticeKind, val text: String, val id: Long = System.
 data class UiState(
     val link: LinkState = LinkState.DISCONNECTED,
     val scanning: Boolean = false,
-    val devices: List<BluetoothDevice> = emptyList(),
     val status: Status? = null,
     val library: List<LibraryItem> = emptyList(),
     val jobs: List<Job> = emptyList(),
     val history: List<HistoryRecord> = emptyList(),
     val stats: Stats? = null,
     val schedule: Schedule? = null,
-    val preview: Preview? = null,
     val capabilities: Capabilities? = null,
     /** Live values read from the printer (e.g. `darkness`); empty if it could not be reached. */
     val printerValues: Map<String, Long> = emptyMap(),
@@ -104,12 +104,11 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startScan() {
         scanJob?.cancel()
-        _state.update { it.copy(scanning = true, devices = emptyList()) }
+        _state.update { it.copy(scanning = true) }
         scanJob = viewModelScope.launch {
             try {
-                scanForInstallation(adapter).collect { device ->
-                    _state.update { s -> if (s.devices.any { it.address == device.address }) s else s.copy(devices = s.devices + device) }
-                }
+                // There is only one installation: connect to the first one found.
+                connect(scanForInstallation(adapter).first())
             } catch (e: CancellationException) {
                 throw e   // a cancelled scan, refresh or fetch is not a failure
             } catch (e: Exception) {
@@ -135,6 +134,7 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
                 rpc = client
                 api = InstallationApi(client)
                 watchLink(link, client)
+                syncClockQuietly(InstallationApi(client))
                 refreshAll()
             } catch (e: CancellationException) {
                 throw e   // a cancelled scan, refresh or fetch is not a failure
@@ -151,12 +151,11 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
         linkJobs += viewModelScope.launch {
             client.changed.collect { change ->
                 val api = api ?: return@collect
-                runCatching {
-                    if (change.has(Domain.STATUS)) refreshStatus(api)
-                    if (change.has(Domain.LIBRARY)) refreshLibrary(api)
-                    if (change.has(Domain.PRINTER)) { refreshJobs(api); refreshStatus(api) }
-                    if (change.has(Domain.SCHEDULER)) refreshSchedule(api)
-                }
+                // Independent, so one failing refresh cannot skip the others (e.g. the library).
+                if (change.has(Domain.STATUS)) refreshQuietly { refreshStatus(api) }
+                if (change.has(Domain.LIBRARY)) refreshQuietly { refreshLibrary(api) }
+                if (change.has(Domain.PRINTER)) refreshQuietly { refreshJobs(api); refreshStatus(api) }
+                if (change.has(Domain.SCHEDULER)) refreshQuietly { refreshSchedule(api) }
             }
         }
     }
@@ -174,6 +173,21 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() { disconnect() }
 
     // ---- state refresh --------------------------------------------------
+
+    private suspend fun refreshQuietly(block: suspend () -> Unit) {
+        try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) { /* the next change hint retries */ }
+    }
+
+    /** Every connection sets the Pi's clock from the phone; the Pi has no network time when offline. */
+    private suspend fun syncClockQuietly(api: InstallationApi) {
+        try {
+            api.syncClock()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            notice(NoticeKind.ERROR, "Clock sync failed: ${describe(e)}")
+        }
+    }
 
     private suspend fun refreshStatus(api: InstallationApi) { val s = api.status(); _state.update { it.copy(status = s) } }
     private suspend fun refreshLibrary(api: InstallationApi) { val l = api.library(); _state.update { it.copy(library = l) } }
@@ -203,8 +217,8 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun refreshJobs(api: InstallationApi) { val j = api.jobs(); _state.update { it.copy(jobs = j) } }
     private suspend fun refreshSchedule(api: InstallationApi) {
-        val s = api.schedule(); val p = api.preview(3)
-        _state.update { it.copy(schedule = s, preview = p) }
+        val s = api.schedule()
+        _state.update { it.copy(schedule = s) }
     }
 
     fun refreshAll() = launchOp("Refresh") { api ->
@@ -225,21 +239,15 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- commands -----------------------------------------------------------
 
-    fun syncClock() = launchOp("Clock sync") { api ->
-        val piNow = api.syncClock()
-        refreshStatus(api)
-        notice(NoticeKind.COMPLETED, "Pi clock set to ${java.time.Instant.ofEpochMilli(piNow)}")
-    }
-
     fun delete(item: LibraryItem) = launchOp("Delete") { api ->
         api.delete(item.id); refreshLibrary(api)
-        notice(NoticeKind.COMPLETED, "Removed ${item.originalFilename}")
+        notice(NoticeKind.COMPLETED, "Image removed")
     }
 
     fun print(item: LibraryItem, copies: Int) = launchOp("Print") { api ->
         val job = api.printItem(item.id, copies)
         refreshJobs(api)
-        notice(NoticeKind.ACCEPTED, "Accepted: ${job.total} print(s) of ${item.originalFilename} queued. The Pi will print them even if you disconnect.")
+        notice(NoticeKind.ACCEPTED, "Accepted: ${job.total} print(s) queued. The Pi will print them even if you disconnect.")
     }
 
     fun printAll(copies: Int) = launchOp("Print all") { api ->
@@ -347,25 +355,53 @@ class InstallationViewModel(app: Application) : AndroidViewModel(app) {
         notice(NoticeKind.ERROR, "Still waiting for the Pi to join $ssid; check again in a moment")
     }
 
+    /** The Pi holds one upload session at a time, so picked files are sent strictly one after another. */
+    private val uploadLock = Mutex()
+
     fun upload(uri: Uri) {
         val client = rpc ?: return notice(NoticeKind.ERROR, "Not connected")
         viewModelScope.launch {
             val resolver = getApplication<Application>().contentResolver
+            var result: art.infinitescroll.protocol.UploadResult? = null
+            val failedBefore = _state.value.status?.printer?.failedCount ?: 0
+            val countBefore = _state.value.library.size
             try {
-                val name = uri.lastPathSegment?.substringAfterLast('/') ?: "artwork"
-                val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("could not read the file")
-                _state.update { it.copy(uploadProgress = 0f) }
-                Uploader(client).upload(name, bytes) { sent, total -> _state.update { s -> s.copy(uploadProgress = sent.toFloat() / total) } }
-                notice(NoticeKind.ACCEPTED, "Accepted: $name was handed to the Pi for processing. It will appear in the library shortly.")
-                // The watcher converts within seconds; look a few times.
-                api?.let { api -> repeat(5) { delay(2_000); runCatching { refreshLibrary(api) } } }
+                uploadLock.withLock {
+                    try {
+                        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "artwork"
+                        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("could not read the file")
+                        _state.update { it.copy(uploadProgress = 0f) }
+                        result = Uploader(client).upload(name, bytes) { sent, total -> _state.update { s -> s.copy(uploadProgress = sent.toFloat() / total) } }
+                    } finally {
+                        _state.update { it.copy(uploadProgress = null) }
+                    }
+                }
+                notice(NoticeKind.ACCEPTED, "Accepted: the image was handed to the Pi for processing. It will appear in the library shortly.")
+                awaitInLibrary(result?.itemId, failedBefore, countBefore)
             } catch (e: CancellationException) {
                 throw e   // a cancelled scan, refresh or fetch is not a failure
             } catch (e: Exception) {
                 notice(NoticeKind.ERROR, "Upload failed: ${describe(e)}")
-            } finally {
-                _state.update { it.copy(uploadProgress = null) }
             }
         }
+    }
+
+    /**
+     * Follows an accepted upload until the Pi's watcher has converted it into the
+     * library. The conversion can take a while on the Pi, so wait up to 90 s and
+     * say so if the image never shows up or the Pi reports a failed conversion.
+     */
+    private suspend fun awaitInLibrary(itemId: String?, failedBefore: Int, countBefore: Int) {
+        val api = api ?: return
+        val deadline = System.currentTimeMillis() + 90_000
+        while (System.currentTimeMillis() < deadline) {
+            delay(2_000)
+            try { refreshLibrary(api); refreshStatus(api) } catch (e: CancellationException) { throw e } catch (e: Exception) { continue }
+            val present = if (itemId != null) _state.value.library.any { it.id == itemId } else _state.value.library.size > countBefore
+            if (present) return notice(NoticeKind.COMPLETED, "Image added to the library")
+            val failed = _state.value.status?.printer?.failedCount ?: 0
+            if (failed > failedBefore) return notice(NoticeKind.ERROR, "The Pi could not convert the image, so it was not added to the library")
+        }
+        notice(NoticeKind.ERROR, "The image is not in the library yet; the Pi may still be processing it")
     }
 }

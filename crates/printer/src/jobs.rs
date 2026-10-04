@@ -46,7 +46,7 @@ pub struct Job {
     pub id: String,
     pub kind: JobKind,
     /// Library item ids, snapshotted when the job was accepted. Each is
-    /// printed `copies` times in a row.
+    /// cycled through in order, `copies` rounds.
     pub items: Vec<String>,
     pub copies: u32,
     /// Print units (one physical print each) completed or skipped so far.
@@ -72,7 +72,7 @@ impl Job {
         if self.copies == 0 || self.done >= self.total() {
             return None;
         }
-        self.items.get((self.done / self.copies) as usize).map(String::as_str)
+        self.items.get(self.done as usize % self.items.len()).map(String::as_str)
     }
 }
 
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn next_item_walks_items_with_copies_in_a_row() {
+    fn next_item_cycles_through_items_once_per_round() {
         let mut store = JobStore::default();
         let mut job = store.enqueue(JobKind::All, vec!["a".into(), "b".into()], 2, 1.0);
         assert_eq!(job.total(), 4);
@@ -181,7 +181,7 @@ mod tests {
             seen.push(id.to_string());
             job.done += 1;
         }
-        assert_eq!(seen, vec!["a", "a", "b", "b"]);
+        assert_eq!(seen, vec!["a", "b", "a", "b"]);
     }
 
     #[test]

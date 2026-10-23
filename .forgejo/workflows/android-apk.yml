@@ -14,7 +14,7 @@ jobs:
   build-apk:
     runs-on: [ephemeral-nix]
     # A hung step must not hold the shared runner indefinitely.
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout
         # Clone via the runner's internal server URL; the public hostname
@@ -94,7 +94,7 @@ jobs:
             KS=$(mktemp)
             echo "$KEYSTORE_B64" | base64 -d > "$KS"
             export IS_KEYSTORE="$KS"
-            TASKS="$TASKS assembleRelease"
+            TASKS="test assembleRelease"
             echo "signing: release keystore present, building signed release"
           else
             echo "signing: no keystore secret, publishing debug build only"

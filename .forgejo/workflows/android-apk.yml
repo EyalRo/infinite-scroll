@@ -169,6 +169,29 @@ jobs:
             echo "catalog: $ID versionCode $CODE downloads and matches"
           } 2>&1 | tee "$GITHUB_WORKSPACE/catalog.log"
 
+      - name: Attach store icon
+        # The icon is shown in the DinoSoft catalog before an app is installed.
+        id: icon
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        timeout-minutes: 1
+        env:
+          PUBLISH_TOKEN: ${{ secrets.DINOSOFT_PUBLISH_TOKEN }}
+        run: |
+          set -eo pipefail
+          {
+            ICON=android/store-icon.png
+            if [ ! -f "$ICON" ] || [ ! -f android/app/build/outputs/apk/release/app-release.apk ]; then
+              echo "icon: no store icon or no signed release; skipping"
+              exit 0
+            fi
+            GRADLE=android/app/build.gradle.kts
+            ID=$(sed -n 's/.*applicationId = "\(.*\)".*/\1/p' "$GRADLE")
+            CODE=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' "$GRADLE")
+            curl -sf -m 30 -X PUT "https://apps.virtualdino.com/icon/$ID/$CODE" \
+              -H "Authorization: Bearer $PUBLISH_TOKEN" -H "Content-Type: image/png" \
+              --data-binary "@$ICON"; echo
+          } 2>&1 | tee "$GITHUB_WORKSPACE/icon.log"
+
       - name: Report
         if: always()
         env:
@@ -180,7 +203,7 @@ jobs:
           [ "$BUILD_STATUS" = "success" ] || level="error"
           tail_txt=""
           if [ "$BUILD_STATUS" != "success" ]; then
-            tail_txt=$(cat sdk.log jdk.log build.log verify.log catalog.log 2>/dev/null | tail -n 40 | tr '\t\r' '  ' | tr -cd '\12\40-\176' \
+            tail_txt=$(cat sdk.log jdk.log build.log verify.log catalog.log icon.log 2>/dev/null | tail -n 40 | tr '\t\r' '  ' | tr -cd '\12\40-\176' \
               | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
           fi
           curl -s --connect-timeout 3 -X POST \

@@ -1,0 +1,190 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".forgejo/workflows/android-apk.yml", ".forgejo/secrets.yml"]
+    tags: ['android-v*']
+  workflow_dispatch:
+
+env:
+  CMDLINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+
+jobs:
+  build-apk:
+    runs-on: [ephemeral-nix]
+    # A hung step must not hold the shared runner indefinitely.
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        # Clone via the runner's internal server URL; the public hostname
+        # is behind Cloudflare Access and redirects CI to a login page.
+        run: |
+          git clone --depth 1 --branch "${{ github.ref_name }}" \
+            "http://oauth2:${{ github.token }}@${GITHUB_SERVER_URL#http://}/${GITHUB_REPOSITORY}.git" .
+
+      - name: Ensure JDK
+        id: jdk
+        # The runner image has no java on PATH. Prefer nix (this is a nix runner),
+        # and fall back to downloading a Temurin JDK. Output goes to jdk.log.
+        run: |
+          set -eo pipefail
+          {
+            if command -v java >/dev/null 2>&1; then
+              java -version
+              exit 0
+            fi
+            echo "no java on PATH; user=$(id -un) HOME=$HOME nix=$(command -v nix || echo none)"
+            installed=""
+            if command -v nix >/dev/null 2>&1; then
+              if jdk=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths 'nixpkgs#jdk21' | head -n1) && [ -x "$jdk/bin/java" ]; then
+                echo "JAVA_HOME=$jdk" >> "$GITHUB_ENV"
+                echo "$jdk/bin" >> "$GITHUB_PATH"
+                installed="nix:$jdk"
+              else
+                echo "nix could not provide a JDK; falling back to a download"
+              fi
+            fi
+            if [ -z "$installed" ]; then
+              curl -fsSL -o /tmp/jdk.tgz "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
+              mkdir -p "$HOME/jdk"
+              tar -xzf /tmp/jdk.tgz -C "$HOME/jdk" --strip-components=1
+              echo "JAVA_HOME=$HOME/jdk" >> "$GITHUB_ENV"
+              echo "$HOME/jdk/bin" >> "$GITHUB_PATH"
+              installed="download:$HOME/jdk"
+            fi
+            echo "JDK provisioned: $installed"
+            echo "node=$(command -v node || echo none)"
+          } 2>&1 | tee "$GITHUB_WORKSPACE/jdk.log"
+
+      - name: Install Android SDK
+        id: sdk
+        run: |
+          set -eo pipefail
+          # The runner user cannot write to /opt, so install under $HOME (or /tmp).
+          ANDROID_SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$ANDROID_SDK_ROOT" 2>/dev/null || ANDROID_SDK_ROOT=/tmp/android-sdk
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          {
+            if [ ! -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+              mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+              curl -fsSL -o /tmp/cmdline-tools.zip "$CMDLINE_TOOLS_URL"
+              unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+              mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+            fi
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+              "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          } 2>&1 | tee "$GITHUB_WORKSPACE/sdk.log"
+
+      - name: Unit tests and debug build
+        id: build
+        working-directory: android
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          KEYSTORE_B64: ${{ secrets.DINOSOFT_KEYSTORE_B64 }}
+          IS_KEYSTORE_PASSWORD: ${{ secrets.DINOSOFT_KEYSTORE_PASSWORD }}
+          IS_KEY_ALIAS: dinosoft
+          IS_KEY_PASSWORD: ${{ secrets.DINOSOFT_KEYSTORE_PASSWORD }}
+        run: |
+          set -eo pipefail
+          chmod +x ./gradlew
+          TASKS="test assembleDebug"
+          if [ -n "$KEYSTORE_B64" ]; then
+            KS=$(mktemp)
+            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+            export IS_KEYSTORE="$KS"
+            TASKS="$TASKS assembleRelease"
+            echo "signing: release keystore present, building signed release"
+          else
+            echo "signing: no keystore secret, publishing debug build only"
+          fi
+          trap '[ -n "${KS:-}" ] && rm -f "$KS"' EXIT
+          ./gradlew --no-daemon --console=plain $TASKS 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Verify release signature
+        id: verify
+        timeout-minutes: 1
+        run: |
+          set -eo pipefail
+          {
+            APK=android/app/build/outputs/apk/release/app-release.apk
+            if [ ! -f "$APK" ]; then
+              echo "verify: no signed release APK (no keystore secret); nothing to verify"
+              exit 0
+            fi
+            "$ANDROID_SDK_ROOT"/build-tools/36.0.0/apksigner verify --verbose --print-certs "$APK" \
+              | tee "$GITHUB_WORKSPACE/apksigner.out"
+            grep -q "Verified using v2 scheme (APK Signature Scheme v2): true\|Verified using v3 scheme (APK Signature Scheme v3): true" "$GITHUB_WORKSPACE/apksigner.out"
+            grep -o 'certificate SHA-256 digest: [0-9a-f]*' "$GITHUB_WORKSPACE/apksigner.out" | head -n1 | awk '{print $4}' > "$GITHUB_WORKSPACE/cert-sha256.txt"
+            echo "cert sha256: $(cat "$GITHUB_WORKSPACE/cert-sha256.txt")"
+          } 2>&1 | tee "$GITHUB_WORKSPACE/verify.log"
+
+      - name: Publish to the public catalog
+        # Forgejo is behind Cloudflare Access, so phones fetch signed APKs from the
+        # catalog Worker instead. Only a signed release is published.
+        id: catalog
+        # Releases are cut by pushing a tag android-vX.Y.Z that matches versionName.
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        timeout-minutes: 3
+        env:
+          PUBLISH_TOKEN: ${{ secrets.DINOSOFT_PUBLISH_TOKEN }}
+        run: |
+          set -eo pipefail
+          {
+            APK=android/app/build/outputs/apk/release/app-release.apk
+            if [ ! -f "$APK" ]; then
+              echo "catalog: no signed release APK (no keystore secret); skipping"
+              exit 0
+            fi
+            [ -n "$PUBLISH_TOKEN" ] || { echo "catalog: signed APK built but DINOSOFT_PUBLISH_TOKEN is missing"; exit 1; }
+            GRADLE=android/app/build.gradle.kts
+            ID=$(sed -n 's/.*applicationId = "\(.*\)".*/\1/p' "$GRADLE")
+            CODE=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' "$GRADLE")
+            VNAME=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' "$GRADLE")
+            if [ "$GITHUB_REF_NAME" != "android-v$VNAME" ]; then echo "catalog: tag $GITHUB_REF_NAME does not match versionName $VNAME"; exit 1; fi
+            MINSDK=$(sed -n 's/.*minSdk = \([0-9]*\).*/\1/p' "$GRADLE")
+            SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+            BASE=https://apps.virtualdino.com
+            # A published versionCode is immutable. Skip when this one is already published,
+            # fail when it is older than the catalog's, publish when it is newer.
+            PUBLISHED=$(curl -sf -m 30 "$BASE/catalog.json" | grep -o "\"id\":\"$ID\"[^}]*" | grep -o '"versionCode":[0-9]*' | cut -d: -f2 || true)
+            if [ -n "$PUBLISHED" ] && [ "$CODE" -eq "$PUBLISHED" ]; then
+              echo "catalog: $ID versionCode $CODE is already published; bump versionCode to release a new build"
+              exit 0
+            fi
+            if [ -n "$PUBLISHED" ] && [ "$CODE" -lt "$PUBLISHED" ]; then
+              echo "catalog: versionCode $CODE is older than the published $PUBLISHED"
+              exit 1
+            fi
+            curl -sf -m 120 -X PUT "$BASE/publish/$ID/$CODE" \
+              -H "Authorization: Bearer $PUBLISH_TOKEN" \
+              -H "X-Sha256: $SHA" -H "X-Cert-Sha256: $(cat cert-sha256.txt)" \
+              -H "X-Version-Name: $VNAME" -H "X-Name: Infinite Scroll" -H "X-Category: art" \
+              -H "X-Min-Sdk: $MINSDK" --data-binary "@$APK"; echo
+            # Prove the public download matches what was built.
+            GOT=$(curl -sf -m 120 "$BASE/apps/$ID/$CODE.apk" | sha256sum | cut -d' ' -f1)
+            echo "built=$SHA downloaded=$GOT"
+            [ "$GOT" = "$SHA" ]
+            echo "catalog: $ID versionCode $CODE downloads and matches"
+          } 2>&1 | tee "$GITHUB_WORKSPACE/catalog.log"
+
+      - name: Report
+        if: always()
+        env:
+          BUILD_STATUS: ${{ job.status }}
+        run: |
+          # Ship the run result (and, on failure, the last lines of the step
+          # output) to central logging so CI problems can be diagnosed later.
+          level="info"
+          [ "$BUILD_STATUS" = "success" ] || level="error"
+          tail_txt=""
+          if [ "$BUILD_STATUS" != "success" ]; then
+            tail_txt=$(cat sdk.log jdk.log build.log verify.log catalog.log 2>/dev/null | tail -n 40 | tr '\t\r' '  ' | tr -cd '\12\40-\176' \
+              | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}')
+          fi
+          curl -s --connect-timeout 3 -X POST \
+            "http://192.168.0.39:9428/insert/jsonline?_stream_fields=service,level,component&_msg_field=msg&_time_field=ts" \
+            -H "Content-Type: application/stream+json" \
+            -d "{\"service\":\"ci\",\"node\":\"runner\",\"level\":\"${level}\",\"component\":\"ci\",\"env\":\"main\",\"repo\":\"infinite-scroll\",\"job\":\"build-apk\",\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"msg\":\"build-apk ${BUILD_STATUS}\",\"sha\":\"${{ github.sha }}\",\"branch\":\"${{ github.ref_name }}\",\"log_tail\":\"${tail_txt}\"}" \
+            > /dev/null 2>&1 || true

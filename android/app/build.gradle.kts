@@ -15,8 +15,8 @@ android {
         applicationId = "art.infinitescroll.control"
         minSdk = 33 // typed GATT write/read callbacks, BLUETOOTH_SCAN/CONNECT permissions
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.1.7"
+        versionCode = 9
+        versionName = "0.1.8"
     }
 
     // Release signing. Credentials come from environment variables (see

@@ -82,10 +82,10 @@ jobs:
         working-directory: android
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          KEYSTORE_B64: ${{ secrets.DINOSOFT_KEYSTORE_B64 }}
-          IS_KEYSTORE_PASSWORD: ${{ secrets.DINOSOFT_KEYSTORE_PASSWORD }}
-          IS_KEY_ALIAS: dinosoft
-          IS_KEY_PASSWORD: ${{ secrets.DINOSOFT_KEYSTORE_PASSWORD }}
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+          IS_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          IS_KEY_ALIAS: infinite-scroll
+          IS_KEY_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
         run: |
           set -eo pipefail
           chmod +x ./gradlew
